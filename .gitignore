@@ -1,0 +1,14 @@
+.DS_Store
+.dart_tool/
+.flutter-plugins*
+.packages
+build/
+coverage/
+*.iml
+.idea/
+**/Flutter/ephemeral/
+**/flutter/ephemeral/
+**/Pods/
+**/.symlinks/
+**/local.properties
+**/.gradle/
