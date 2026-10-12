@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -5,6 +6,30 @@ import 'package:papertrail/features/annotations/ink_filter.dart';
 
 void main() {
   for (final hz in [60, 120, 240]) {
+    for (final letter in ['e', 'o']) {
+      for (final duration in [.1, .2, .8]) {
+        test('preserves a small $letter written in ${duration}s at $hz Hz', () {
+          final filter = InkFilter();
+          const size = Size(600, 800);
+          final samples = (duration * hz).round();
+          final raw = <Offset>[];
+          final filtered = <Offset>[];
+          for (var i = 0; i <= samples; i++) {
+            final position = _letterPoint(letter, i / samples);
+            raw.add(position);
+            filtered.add(filter.add(position, .5,
+              (i * duration * 1000000 / samples).round(), size).inSize(size));
+          }
+          // Compare with the sampled path, since sparse input can itself miss
+          // extrema. Check live ink before endpoint restoration can mask loss.
+          final original = _bounds(raw);
+          final result = _bounds(filtered);
+          expect(result.width, greaterThanOrEqualTo(original.width * .9));
+          expect(result.height, greaterThanOrEqualTo(original.height * .9));
+        });
+      }
+    }
+
     test('tracks a rapid direction reversal at $hz Hz', () {
       final filter = InkFilter();
       const size = Size(600, 800);
@@ -98,4 +123,26 @@ void main() {
     expect(next.inSize(size), const Offset(700, 300)); // Expanded notes allow x > 1.
     expect(next.pressure, .3);
   });
+}
+
+Offset _letterPoint(String letter, double progress) {
+  const radius = 10.0;
+  final double angle;
+  if (letter == 'e') {
+    // Crossbar followed by a loop, traversed at constant path speed.
+    final distance = progress * (18 + radius * 1.75 * math.pi);
+    if (distance <= 18) return Offset(92 + distance, 200);
+    angle = (distance - 18) / radius;
+  } else {
+    angle = progress * 2 * math.pi;
+  }
+  return Offset(100 + radius * math.cos(angle), 200 - radius * math.sin(angle));
+}
+
+Rect _bounds(List<Offset> points) {
+  var result = Rect.fromPoints(points.first, points.first);
+  for (final point in points.skip(1)) {
+    result = result.expandToInclude(Rect.fromPoints(point, point));
+  }
+  return result;
 }

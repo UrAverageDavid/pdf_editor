@@ -5,8 +5,12 @@ import 'ink.dart';
 
 /// A speed-adaptive low-pass filter based on One Euro, in logical screen pixels.
 /// Slow handwriting is stabilized; fast strokes increase the cutoff to avoid
-/// trailing the nib. Only new samples are filtered, so previous ink never moves.
+/// trailing the nib. A spatial limit prevents tight loops from shrinking when
+/// direction changes lower the speed estimate. Only new samples are filtered,
+/// so previous ink never moves.
 class InkFilter {
+  static const double _maxPositionError = 1; // Logical screen pixels.
+
   Offset? _raw;
   Offset _position = Offset.zero;
   Offset _velocity = Offset.zero;
@@ -47,6 +51,14 @@ class InkFilter {
         _fastVelocity.distance - noiseSpeed);
       final cutoff = 1.5 + .04 * speed;
       _position += (position - _position) * _alpha(cutoff, dt);
+      // Temporal smoothing can cut across a fast loop before reaching its
+      // extrema. Keep its displacement within the stationary noise allowance,
+      // regardless of speed or direction, and retain that correction as state.
+      final error = _position - position;
+      final distance = error.distance;
+      if (distance > _maxPositionError) {
+        _position = position + error * (_maxPositionError / distance);
+      }
       _pressure += (pressure - _pressure) * _alpha(8, dt);
     }
     _raw = position;
