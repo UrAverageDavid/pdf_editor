@@ -1,15 +1,19 @@
+import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' show ViewFocusEvent, ViewFocusState;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../core/page_geometry.dart';
 import '../annotations/editor_controller.dart';
 import '../annotations/ink.dart';
+import '../annotations/ink_filter.dart';
 import '../annotations/ink_painter.dart';
+import '../annotations/pen_haptics.dart';
 import 'page_image.dart';
 import 'render_service.dart';
+import 'scroll_motion.dart';
 import 'viewport_controller.dart';
 
 class DocumentView extends StatefulWidget {
@@ -22,8 +26,13 @@ class DocumentView extends StatefulWidget {
   State<DocumentView> createState() => DocumentViewState();
 }
 
-class DocumentViewState extends State<DocumentView> {
+class DocumentViewState extends State<DocumentView>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final _ink = ActiveInk();
+  final _filter = InkFilter();
+  final _haptics = PenHaptics();
+  late final ScrollMotion _scroll;
+  bool _penInking = false;
   final _touches = <int, Offset>{};
   final _erased = <String>{};
   int? _pointer;
@@ -41,6 +50,8 @@ class DocumentViewState extends State<DocumentView> {
   @override
   void initState() {
     super.initState();
+    _scroll = ScrollMotion(view, this);
+    WidgetsBinding.instance.addObserver(this);
     _syncWritingAreas();
     view.addListener(_rebuild);
     widget.editor.addListener(_syncWritingAreas);
@@ -106,6 +117,7 @@ class DocumentViewState extends State<DocumentView> {
     // The popup's button handles this contact; it must never create ink below it.
     if (_edgePopup?.contains(e.localPosition) ?? false) return;
     _hideEdgePopup();
+    _scroll.stop();
     if (_isPen(e)) { _lastPen = DateTime.now(); _touches.clear(); }
     if (_pointer != null) return;
     final drawingDevice = _isPen(e) || (e.kind == PointerDeviceKind.mouse &&
@@ -125,9 +137,13 @@ class DocumentViewState extends State<DocumentView> {
       _ink.surface = onPage ? InkSurface.page : InkSurface.notes;
       _ink.width = widget.editor.width;
       _ink.color = widget.editor.color;
+      _filter.reset();
+      _penInking = _isPen(e) && !_erasing;
+      if (_penInking) unawaited(_haptics.start());
       _sample(e);
     } else if (e.kind != PointerDeviceKind.touch || !_palmSuppressed) {
       _touches[e.pointer] = e.localPosition;
+      if (_touches.length == 1) _scroll.begin(e.timeStamp);
     }
   }
 
@@ -138,8 +154,9 @@ class DocumentViewState extends State<DocumentView> {
     if (_touches.length == 1) {
       final previous = _touches[e.pointer]!;
       _touches[e.pointer] = e.localPosition;
-      view.pan(e.localPosition - previous);
+      _scroll.drag(e.localPosition - previous, e.timeStamp);
     } else {
+      _scroll.stop();
       final before = _touches.values.take(2).toList();
       final oldCenter = (before[0] + before[1]) / 2;
       final oldDistance = (before[0] - before[1]).distance;
@@ -171,21 +188,30 @@ class DocumentViewState extends State<DocumentView> {
       setState(() => _erasePosition = e.localPosition);
       return;
     }
-    final normalized = _ink.surface == InkSurface.page ? normalizePoint(local, reference) :
-      Offset(local.dx / reference.width, local.dy / reference.height);
     final range = e.pressureMax - e.pressureMin;
     final pressure = _isPen(e) && range > 0
         ? ((e.pressure - e.pressureMin) / range).clamp(.05, 1.0).toDouble() : .75;
-    _ink.points.add(InkPoint(normalized.dx, normalized.dy, pressure, e.timeStamp.inMicroseconds));
+    // Filter in screen units so stabilization feels the same at every zoom.
+    // Store the filtered samples so live ink, saved ink and erasing agree.
+    _ink.points.add(_filter.add(local * view.scale, pressure,
+      e.timeStamp.inMicroseconds, reference * view.scale));
     _ink.changed();
   }
 
   /// Also used before focus loss, document switching, export, and normal exit.
   void finishInput() {
+    _scroll.stop();
+    if (_penInking) unawaited(_haptics.stop());
+    _penInking = false;
     if (_pointer == null) { _touches.clear(); return; }
     if (_erasing) {
       widget.editor.erase(_erased, _page!);
     } else if (_ink.points.isNotEmpty) {
+      final endpoint = _filter.endpoint;
+      final last = _ink.points.last;
+      if (endpoint != null && (endpoint.x != last.x || endpoint.y != last.y)) {
+        _ink.points.add(endpoint);
+      }
       final now = DateTime.now();
       widget.editor.addStroke(InkStroke(
         id: '${now.microsecondsSinceEpoch}-${_strokeSequence++}', pageIndex: _page!,
@@ -197,6 +223,7 @@ class DocumentViewState extends State<DocumentView> {
     _previousErase = null;
     _erased.clear();
     _ink.clear();
+    _filter.reset();
     view.inputActive = false;
     widget.renders.inkActive = false;
     if (mounted) setState(() => _erasePosition = null);
@@ -204,21 +231,61 @@ class DocumentViewState extends State<DocumentView> {
 
   void _up(PointerEvent e) {
     if (e.pointer == _pointer) finishInput();
-    _touches.remove(e.pointer);
+    final wasDragging = _touches.remove(e.pointer) != null;
+    if (wasDragging && _touches.isEmpty && e is PointerUpEvent &&
+        e.kind == PointerDeviceKind.touch) {
+      _scroll.end(e.timeStamp);
+    } else if (wasDragging) {
+      _scroll.stop();
+      if (_touches.length == 1) _scroll.begin(e.timeStamp);
+    }
   }
 
   void _signal(PointerSignalEvent e) {
+    if (e is PointerScrollInertiaCancelEvent) { _scroll.stop(); return; }
     if (e is! PointerScrollEvent || _pointer != null) return;
     GestureBinding.instance.pointerSignalResolver.register(e, (event) {
       final scroll = event as PointerScrollEvent;
       if (HardwareKeyboard.instance.isControlPressed || HardwareKeyboard.instance.isMetaPressed) {
         view.setZoom(view.zoom * math.exp(-scroll.scrollDelta.dy * .002), focal: scroll.localPosition);
-      } else { view.pan(-scroll.scrollDelta); }
+      } else { _scroll.wheel(-scroll.scrollDelta, scroll.timeStamp); }
     });
+  }
+
+  void _trackpadStart(PointerPanZoomStartEvent e) {
+    _trackpadScale = 1;
+    _scroll.begin(e.timeStamp);
+  }
+
+  void _trackpadUpdate(PointerPanZoomUpdateEvent e) {
+    if (_pointer != null) return;
+    if (e.scale != _trackpadScale) {
+      _scroll.stop();
+      view.setZoom(view.zoom * e.scale / _trackpadScale, focal: e.localPosition);
+      view.pan(e.panDelta);
+    } else {
+      _scroll.drag(e.panDelta, e.timeStamp);
+    }
+    _trackpadScale = e.scale;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) finishInput();
+  }
+
+  @override
+  void didChangeViewFocus(ViewFocusEvent event) {
+    if (event.state == ViewFocusState.unfocused) finishInput();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _scroll.dispose();
+    if (_penInking) unawaited(_haptics.stop());
+    view.inputActive = false;
+    widget.renders.inkActive = false;
     view.removeListener(_rebuild);
     widget.editor.removeListener(_syncWritingAreas);
     _ink.dispose();
@@ -241,16 +308,13 @@ class DocumentViewState extends State<DocumentView> {
           onPointerDown: _down, onPointerMove: _move,
           onPointerHover: _hover,
           onPointerUp: _up, onPointerCancel: _up, onPointerSignal: _signal,
-          onPointerPanZoomStart: (_) => _trackpadScale = 1,
-          onPointerPanZoomUpdate: (e) {
-            view.setZoom(view.zoom * e.scale / _trackpadScale, focal: e.localPosition);
-            _trackpadScale = e.scale;
-            view.pan(e.panDelta);
-          },
+          onPointerPanZoomStart: _trackpadStart,
+          onPointerPanZoomUpdate: _trackpadUpdate,
+          onPointerPanZoomEnd: (e) => _scroll.end(e.timeStamp),
           child: ClipRect(child: ColoredBox(color: const Color(0xffe9e9e5),
             child: Stack(children: [
               for (final page in pages)
-                Positioned.fromRect(rect: view.pageRect(page),
+                Positioned.fromRect(key: ValueKey('page-$page'), rect: view.pageRect(page),
                   child: RepaintBoundary(child: DecoratedBox(
                     decoration: BoxDecoration(color: Colors.white,
                       boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: .08), blurRadius: 12, offset: const Offset(0, 3))]),
@@ -268,7 +332,8 @@ class DocumentViewState extends State<DocumentView> {
                 ),
               for (final page in pages)
                 if (view.layout.notes[page].width > 0)
-                  Positioned.fromRect(rect: view.screenRect(view.layout.notes[page]),
+                  Positioned.fromRect(key: ValueKey('notes-$page'),
+                    rect: view.screenRect(view.layout.notes[page]),
                     child: Semantics(label: 'Writing space for page ${page + 1}',
                       child: ClipRect(child: DecoratedBox(
                         decoration: const BoxDecoration(color: Color(0xfffffdf5),

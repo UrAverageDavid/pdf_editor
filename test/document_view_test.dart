@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:papertrail/features/annotations/editor_controller.dart';
 import 'package:papertrail/features/annotations/ink.dart';
@@ -39,6 +40,78 @@ class FakePdf implements PdfDocumentHandle {
 }
 
 void main() {
+  testWidgets('scrolling preserves loaded page state as the visible list shifts', (tester) async {
+    final document = FakePdf();
+    final renders = RenderService(document);
+    final editor = EditorController(sampleDocument(), MemoryRepository());
+    final viewport = ViewportController(document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    viewport.jumpTo(1);
+    await tester.pumpAndSettle();
+    final page = find.byKey(const ValueKey('pdf-3'));
+    final state = tester.state(page);
+    final image = tester.widget<RawImage>(find.descendant(of: page, matching: find.byType(RawImage))).image;
+    viewport.jumpTo(3); // Evicts page 0 and shifts every remaining child's index.
+    await tester.pump();
+    expect(tester.state(page), same(state));
+    expect(tester.widget<RawImage>(find.descendant(of: page, matching: find.byType(RawImage))).image, same(image));
+    await tester.pumpAndSettle();
+    expect(document.rendered.where((p) => p == 3).length, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  });
+
+  testWidgets('Windows haptics follow pen strokes and stop on cancel and focus loss', (tester) async {
+    const channel = MethodChannel('papertrail/pen_haptics');
+    final calls = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      return null;
+    });
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
+    });
+    final document = FakePdf();
+    final renders = RenderService(document);
+    final editor = EditorController(sampleDocument(), MemoryRepository());
+    final viewport = ViewportController(document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    final pen = await tester.startGesture(const Offset(200, 150), kind: PointerDeviceKind.stylus);
+    await pen.moveTo(const Offset(220, 160), timeStamp: const Duration(milliseconds: 16));
+    await pen.cancel();
+    await tester.pump();
+    expect(calls, ['start', 'stop']);
+    calls.clear();
+    final second = await tester.startGesture(const Offset(200, 150), kind: PointerDeviceKind.stylus);
+    tester.state<DocumentViewState>(find.byType(DocumentView))
+      .didChangeAppLifecycleState(AppLifecycleState.inactive);
+    await tester.pump();
+    expect(calls, ['start', 'stop']);
+    expect(viewport.inputActive, isFalse);
+    await second.up();
+    calls.clear();
+    for (final tool in [EditorTool.hand, EditorTool.eraser]) {
+      editor.setTool(tool);
+      final gesture = await tester.startGesture(const Offset(200, 150), kind: PointerDeviceKind.stylus);
+      await gesture.up();
+    }
+    editor.setTool(EditorTool.pen);
+    final mouse = await tester.startGesture(const Offset(200, 150), kind: PointerDeviceKind.mouse);
+    await mouse.up();
+    await tester.pump();
+    expect(calls, isEmpty);
+    await editor.flush();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  }, variant: TargetPlatformVariant({TargetPlatform.windows}));
+
   for (final kind in [PointerDeviceKind.mouse, PointerDeviceKind.stylus]) {
     testWidgets('$kind edge popup adds, expands and restores space without ink', (tester) async {
       final document = FakePdf();

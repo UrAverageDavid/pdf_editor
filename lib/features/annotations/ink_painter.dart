@@ -6,7 +6,7 @@ import 'editor_controller.dart';
 import 'ink.dart';
 
 /// A conservative midpoint smoother with pressure-varying segments.
-/// Kept separate so raw stored samples never depend on the painting algorithm.
+/// Kept separate so stored samples never depend on the painting algorithm.
 class StrokeSmoother {
   static void paint(Canvas canvas, Size size, List<InkPoint> points,
       double width, Color color) {

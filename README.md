@@ -17,7 +17,8 @@ flutter run -d windows
 ```
 
 Use `flutter run -d macos` on a Mac, or `flutter devices` to select an iOS/Android device.
-Windows requires the Visual Studio desktop C++ toolchain and Developer Mode for the PDF
+Windows requires the Visual Studio desktop C++ toolchain, Windows SDK 10.0.22000.0 or
+newer (for pen haptics declarations), and Developer Mode for the PDF
 plugin's symlinks. macOS/iOS need full Xcode; Apple native PDFium dependencies also need
 the package's supported CocoaPods or Swift Package Manager setup.
 
@@ -41,6 +42,12 @@ loading, margin persistence, alignment after expansion, erasing, undo/redo, and 
 Flutter analysis reports one existing `cacheExtent` deprecation in the thumbnail list.
 Native app interaction and stylus hardware have not been manually validated for this feature.
 
+**Pen and scrolling validation:** The 39-test Flutter suite passes, including adaptive
+position/pressure filtering, scroll easing and momentum cancellation, retained page-image
+state across scrolling, and mocked Windows haptic start/stop behavior. Analysis reports
+the existing thumbnail `cacheExtent` deprecation. The Windows runner and physical pen
+haptics still require a Windows build and Surface hardware validation.
+
 ## Included
 
 - Minimal document library and recent documents.
@@ -48,8 +55,11 @@ Native app interaction and stylus hardware have not been manually validated for 
 - Immutable imported PDF snapshots; annotations never rewrite a PDF.
 - Continuous document viewport with mixed page sizes and visible pages ±2 instantiated.
 - Prioritized render queue, 64 MiB LRU image cache, and a 2-million-pixel per-page limit.
-- Stylus and mouse drawing, pressure fallback, smoothing, and normalized vector samples.
-- Touch pan/pinch, trackpad pan/zoom, wheel scrolling, Ctrl/Cmd-wheel zoom, fit width.
+- Stylus and mouse drawing with speed-adaptive position/pressure filtering, midpoint
+  curves, and normalized vector samples shared by live and saved ink.
+- Continuous pen haptics on supported Windows 11 hardware while writing.
+- Touch pan/pinch with release momentum, trackpad pan/zoom, eased and accelerated
+  wheel/precision scrolling, Ctrl/Cmd-wheel zoom, fit width.
 - Pen color and width; whole-stroke eraser, including inverted stylus when reported.
 - Per-page writing space to the right: add, expand, hide/show, autosave, and undo/redo.
 - Grouped erase undo/redo, with a 100-command in-memory history limit.
@@ -63,6 +73,18 @@ Native app interaction and stylus hardware have not been manually validated for 
 Open a PDF or choose **Try the practice document**. Pen and left mouse drag draw. Touch never
 creates ink: one finger pans and two fingers zoom. Select Hand to pan with a mouse.
 The eraser removes whole strokes; one eraser gesture is one undo step.
+
+Pen vibration uses Windows' `InkContinuous` waveform at moderate intensity when the
+pen supports it. It requires both a haptic-capable pen (such as Surface Slim Pen 2)
+and compatible hardware; ordinary Surface Pens and unsupported devices continue
+without vibration. See [Microsoft's pen haptics sample](https://learn.microsoft.com/en-us/samples/microsoft/windows-universal-samples/penhaptics/).
+Feedback stops on lift, cancellation, leaving the drawing surface, focus loss, or
+closing the document. Hand and eraser tools do not trigger writing feedback.
+
+Finger panning stays under the finger and coasts on release. Faster repeated scroll
+signals get a bounded speed boost and ease to a stop. New contact, pen input, zoom,
+page jumps, and focus loss stop momentum. Page images keep their widget identity
+when the visible page range shifts, preventing loading flashes during scrolling.
 
 Move the mouse cursor or hover your pen near a page's right edge, then click or tap
 the **Add writing space** popup to add a blank margin to that page. Hover at the
@@ -160,6 +182,11 @@ The bundled sample can be regenerated with `python3 tool/make_sample.py`.
 
 On a Surface Pro 11, verify rapid handwriting, palm rest, inverted eraser, touch gestures,
 immediate normal close after drawing, reopen alignment, long scrolling, and memory behavior.
+Check slow diagonal lines and pressure changes at several zoom levels, quick finger
+flicks, trackpad direction changes, and scrolling across page boundaries. On a supported
+Surface/pen pair, check vibration during writing and that it stops on lift, Alt-Tab,
+cancellation, and close. Also check a non-haptic pen. The native Windows haptics bridge
+requires a Windows build and hardware validation; Flutter tests only mock its channel.
 Use profile/release mode for frame-time and latency measurements.
 
 ## Remaining MVP work
