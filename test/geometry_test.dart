@@ -5,6 +5,41 @@ import 'package:papertrail/core/page_geometry.dart';
 import 'package:papertrail/features/pdf_viewer/viewport_controller.dart';
 
 void main() {
+  test('navigation reveals the PDF after panning into a wide writing area', () {
+    final view = ViewportController(List.filled(3, const Size(612, 792)));
+    view.configure(const Size(1000, 800));
+    view.setWritingAreas({0: 2, 1: 2});
+    view.revealWritingArea(0);
+    expect(view.screenRect(view.layout.notes[0]).right, closeTo(976, 1e-8));
+    expect(view.pageRect(0).right, lessThan(0));
+    view.setWritingAreas({1: 2});
+    view.revealPage(0);
+    expect(view.pageRect(0).left, closeTo(24, 1e-8));
+    view.revealWritingArea(1);
+    view.jumpTo(2);
+    expect(view.pageRect(2).left, closeTo(24, 1e-8));
+    expect(view.pageRect(2).top, closeTo(20, 1e-8));
+    view.dispose();
+  });
+
+  test('right-side space preserves mixed PDF page geometry and scale', () {
+    final view = ViewportController([const Size(612, 792), const Size(900, 600)]);
+    view.configure(const Size(1000, 800));
+    final original = List<Rect>.of(view.layout.pages);
+    final scale = view.scale;
+    view.setWritingAreas({0: .5, 1: 1.5});
+    expect(view.layout.pages, original);
+    expect(view.scale, scale);
+    expect(view.layout.notes[0].left, original[0].right);
+    expect(view.layout.notes[0].width, 306);
+    expect(view.layout.width, 2250);
+    view.setZoom(view.fitWidthZoom);
+    expect(view.layout.width * view.scale, closeTo(952, 1e-8));
+    view.setWritingAreas({});
+    expect(view.layout.pages, original);
+    view.dispose();
+  });
+
   test('page coordinates round-trip across page sizes', () {
     for (final size in [const Size(612, 792), const Size(1600, 900)]) {
       const point = Offset(.25, .75);

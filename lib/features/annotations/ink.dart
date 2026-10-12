@@ -2,8 +2,10 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 enum EditorTool { pen, eraser, hand }
+enum InkSurface { page, notes }
 
-/// Coordinates are relative to the displayed (rotated) page, top-left origin.
+/// Coordinates use the original displayed (rotated) page size as their unit.
+/// The origin is the top-left of the stroke's surface; note x may exceed 1.
 class InkPoint {
   const InkPoint(this.x, this.y, this.pressure, this.timeMicros);
   final double x;
@@ -14,12 +16,12 @@ class InkPoint {
   Offset inSize(Size size) => Offset(x * size.width, y * size.height);
   List<num> toJson() => [x, y, pressure, timeMicros];
 
-  factory InkPoint.fromJson(List<dynamic> value) {
+  factory InkPoint.fromJson(List<dynamic> value, {bool extended = false}) {
     final x = (value[0] as num).toDouble();
     final y = (value[1] as num).toDouble();
     final pressure = (value[2] as num).toDouble();
     if (!x.isFinite || !y.isFinite || !pressure.isFinite ||
-        x < 0 || x > 1 || y < 0 || y > 1 || pressure < 0 || pressure > 1) {
+        x < 0 || (!extended && x > 1) || y < 0 || y > 1 || pressure < 0 || pressure > 1) {
       throw const FormatException('Invalid ink coordinates');
     }
     return InkPoint(x, y, pressure, (value[3] as num).toInt());
@@ -28,11 +30,14 @@ class InkPoint {
 
 class InkStroke {
   InkStroke({required this.id, required this.pageIndex, required List<InkPoint> points,
-    required this.width, required this.color, required this.createdAt})
+    required this.width, required this.color, required this.createdAt,
+    this.surface = InkSurface.page})
       : points = List.unmodifiable(points);
 
   final String id;
   final int pageIndex;
+  /// Notes use the original page size as a fixed reference, even when expanded.
+  final InkSurface surface;
   final List<InkPoint> points;
   /// Width in PDF display points, independent of viewport size or zoom.
   final double width;
@@ -40,18 +45,24 @@ class InkStroke {
   final DateTime createdAt;
 
   Map<String, dynamic> toJson() => {
-    'id': id, 'page': pageIndex, 'points': points.map((p) => p.toJson()).toList(),
+    'id': id, 'page': pageIndex, 'surface': surface.name,
+    'points': points.map((p) => p.toJson()).toList(),
     'width': width, 'color': color, 'createdAt': createdAt.toIso8601String(),
   };
 
   factory InkStroke.fromJson(Map<String, dynamic> value) {
+    final surface = switch (value['surface']) {
+      null || 'page' => InkSurface.page,
+      'notes' => InkSurface.notes,
+      _ => throw const FormatException('Invalid ink surface'),
+    };
     final width = (value['width'] as num).toDouble();
     final points = (value['points'] as List<dynamic>)
-        .map((p) => InkPoint.fromJson(p as List<dynamic>)).toList();
+        .map((p) => InkPoint.fromJson(p as List<dynamic>, extended: surface == InkSurface.notes)).toList();
     if (!width.isFinite || width <= 0 || points.isEmpty) {
       throw const FormatException('Invalid stroke');
     }
-    return InkStroke(id: value['id'] as String, pageIndex: value['page'] as int,
+    return InkStroke(id: value['id'] as String, pageIndex: value['page'] as int, surface: surface,
       points: points, width: width, color: value['color'] as int,
       createdAt: DateTime.parse(value['createdAt'] as String));
   }

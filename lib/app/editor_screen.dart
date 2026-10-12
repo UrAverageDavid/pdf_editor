@@ -35,6 +35,10 @@ class EditorScreenState extends State<EditorScreen> {
   void initState() {
     super.initState();
     _viewport = ViewportController(widget.renders.document.pageSizes);
+    _viewport.setWritingAreas({
+      for (final entry in editor.document.writingAreas.entries)
+        if (entry.value.visible) entry.key: entry.value.width,
+    });
     editor.addListener(_rebuild);
   }
   void _rebuild() { if (mounted) setState(() {}); }
@@ -125,6 +129,35 @@ class EditorScreenState extends State<EditorScreen> {
         _button(Icons.view_sidebar_outlined, 'Toggle page thumbnails', () {
           finishInput(); setState(() => _thumbnails = !_thumbnails);
         }, selected: _thumbnails),
+        AnimatedBuilder(animation: _viewport, builder: (context, _) {
+          final page = _viewport.currentPage;
+          final area = editor.document.writingAreas[page];
+          return PopupMenuButton<String>(
+            tooltip: 'Writing space for page ${page + 1}',
+            onOpened: finishInput,
+            onSelected: (action) {
+              finishInput();
+              if (action == 'expand') { editor.expandWritingArea(page); }
+              else { editor.toggleWritingArea(page); }
+              if (editor.document.writingAreas[page]?.visible ?? false) {
+                _viewport.revealWritingArea(page);
+              } else { _viewport.revealPage(page); }
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(value: 'toggle', child: Text(area == null ? 'Add writing space to the right' :
+                area.visible ? 'Hide writing space (keep notes)' : 'Show writing space')),
+              if (area != null) const PopupMenuItem(value: 'expand', child: Text('Add more space to the right')),
+            ],
+            child: Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(area == null ? Icons.note_add_outlined : Icons.sticky_note_2_outlined,
+                  size: 21, color: area == null ? ink : accent),
+                const SizedBox(width: 6),
+                Text(area == null ? 'Add writing space' : area.visible ? 'Writing space' : 'Notes hidden'),
+                const Icon(Icons.arrow_drop_down, size: 18),
+              ])),
+          );
+        }),
         const SizedBox(width: 12),
         _button(Icons.edit_outlined, 'Pen (P)', () => _tool(EditorTool.pen), selected: editor.tool == EditorTool.pen),
         const SizedBox(width: 4),
@@ -181,7 +214,7 @@ class EditorScreenState extends State<EditorScreen> {
         SizedBox(width: 47, child: Text('${(_viewport.zoom * 100).round()}%', textAlign: TextAlign.center,
           style: const TextStyle(fontSize: 12))),
         _button(Icons.add, 'Zoom in', () => _viewport.setZoom(_viewport.zoom * 1.2)),
-        _button(Icons.fit_screen_outlined, 'Fit width', () => _viewport.setZoom(1)),
+        _button(Icons.fit_screen_outlined, 'Fit width', () => _viewport.setZoom(_viewport.fitWidthZoom)),
       ]))),
   ])));
 }
@@ -208,7 +241,14 @@ class _Thumbnails extends StatelessWidget {
                   PageImage(renders: renders, page: page, scale: .3, priority: 4),
                   IgnorePointer(child: CustomPaint(painter: CommittedInkPainter(editor, page, size.width))),
                 ])),
-              const SizedBox(height: 8), Text('${page + 1}', style: const TextStyle(fontSize: 11)),
+              const SizedBox(height: 8), Row(mainAxisSize: MainAxisSize.min, children: [
+                Text('${page + 1}', style: const TextStyle(fontSize: 11)),
+                if (editor.document.writingAreas.containsKey(page)) ...[
+                  const SizedBox(width: 5),
+                  Tooltip(message: 'Has writing space', child: Icon(Icons.sticky_note_2_outlined,
+                    size: 14, color: accent)),
+                ],
+              ]),
             ])));
         })),
     ]));

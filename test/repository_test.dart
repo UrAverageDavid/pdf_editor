@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:papertrail/features/document/local_repository.dart';
+import 'package:papertrail/features/document/app_document.dart';
+import 'package:papertrail/features/annotations/ink.dart';
 
 import 'helpers.dart';
 
@@ -55,6 +57,22 @@ void main() {
     await File('${repository.root.path}/${document.id}/notes-99999999999999999999.json.part')
       .writeAsString('incomplete');
     expect((await repository.load(document.id))!.document.annotations[0]!.single.id, 'saved');
+  });
+
+  test('writing area and ink reopen from disk without altering the PDF', () async {
+    final source = File('assets/welcome.pdf');
+    final bytes = await source.readAsBytes();
+    final id = await repository.importPdf(XFile(source.path));
+    final document = sampleDocument(id: id);
+    document.writingAreas[1] = const WritingArea(width: 1.5, visible: false);
+    document.annotations[1] = [InkStroke(id: 'note', pageIndex: 1,
+      surface: InkSurface.notes, points: const [InkPoint(1.2, .5, .7, 0)],
+      width: 2, color: 0xff000000, createdAt: DateTime.utc(2026))];
+    await repository.save(document.toJson());
+    final loaded = (await repository.load(id))!.document;
+    expect(loaded.toJson(), document.toJson());
+    expect(await File(repository.pdfPath(id)).readAsBytes(), bytes);
+    expect(await source.readAsBytes(), bytes);
   });
 
   test('retains a bounded number of successful generations', () async {

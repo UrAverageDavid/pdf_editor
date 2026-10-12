@@ -33,12 +33,69 @@ class DocumentViewState extends State<DocumentView> {
   Offset? _previousErase;
   double _trackpadScale = 1;
   int _strokeSequence = 0;
+  int? _edgePage;
+  Rect? _edgePopup;
   DateTime _lastPen = DateTime.fromMillisecondsSinceEpoch(0);
   ViewportController get view => widget.viewport;
 
   @override
-  void initState() { super.initState(); view.addListener(_rebuild); }
-  void _rebuild() { if (mounted) setState(() {}); }
+  void initState() {
+    super.initState();
+    _syncWritingAreas();
+    view.addListener(_rebuild);
+    widget.editor.addListener(_syncWritingAreas);
+  }
+  void _syncWritingAreas() => view.setWritingAreas({
+    for (final entry in widget.editor.document.writingAreas.entries)
+      if (entry.value.visible) entry.key: entry.value.width,
+  });
+  void _rebuild() {
+    if (mounted) setState(() { _edgePage = null; _edgePopup = null; });
+  }
+
+  void _hideEdgePopup() {
+    if (_edgePage != null) setState(() { _edgePage = null; _edgePopup = null; });
+  }
+
+  void _hover(PointerHoverEvent e) {
+    if (_pointer != null || _touches.isNotEmpty ||
+        (e.kind != PointerDeviceKind.mouse && !_isPen(e))) return;
+    final position = e.localPosition;
+    // Keep the action still and reachable as the pointer moves onto it.
+    if (_edgePopup?.inflate(8).contains(position) ?? false) return;
+    final page = view.layout.pageAtY(view.toDocument(position).dy);
+    final notes = view.layout.notes[page];
+    final rect = view.screenRect(notes.width > 0 ? notes : view.layout.pages[page]);
+    if (rect.right < 0 || rect.right > view.size.width ||
+        position.dy < rect.top || position.dy > rect.bottom ||
+        (position.dx - rect.right).abs() > 24 ||
+        view.size.width < 64 || view.size.height < 60) {
+      _hideEdgePopup();
+      return;
+    }
+    if (_edgePage == page) return;
+    final width = math.min(208.0, view.size.width - 16);
+    setState(() {
+      _edgePage = page;
+      _edgePopup = Rect.fromLTWH(
+        (rect.right - width - 8).clamp(8.0, view.size.width - width - 8),
+        (position.dy - 22).clamp(8.0, view.size.height - 52), width, 44);
+    });
+  }
+
+  void _addSpaceAtEdge() {
+    final page = _edgePage;
+    if (page == null) return;
+    _hideEdgePopup();
+    finishInput();
+    final area = widget.editor.document.writingAreas[page];
+    if (area == null || !area.visible) {
+      widget.editor.toggleWritingArea(page);
+    } else {
+      widget.editor.expandWritingArea(page);
+    }
+    view.revealWritingArea(page);
+  }
 
   bool _isPen(PointerEvent e) => e.kind == PointerDeviceKind.stylus ||
       e.kind == PointerDeviceKind.invertedStylus;
@@ -46,6 +103,9 @@ class DocumentViewState extends State<DocumentView> {
       DateTime.now().difference(_lastPen).inMilliseconds < 180;
 
   void _down(PointerDownEvent e) {
+    // The popup's button handles this contact; it must never create ink below it.
+    if (_edgePopup?.contains(e.localPosition) ?? false) return;
+    _hideEdgePopup();
     if (_isPen(e)) { _lastPen = DateTime.now(); _touches.clear(); }
     if (_pointer != null) return;
     final drawingDevice = _isPen(e) || (e.kind == PointerDeviceKind.mouse &&
@@ -53,7 +113,8 @@ class DocumentViewState extends State<DocumentView> {
     if (drawingDevice && widget.editor.tool != EditorTool.hand) {
       final position = view.toDocument(e.localPosition);
       final page = view.layout.pageAtY(position.dy);
-      if (!view.layout.pages[page].contains(position)) return;
+      final onPage = view.layout.pages[page].contains(position);
+      if (!onPage && !view.layout.notes[page].contains(position)) return;
       _pointer = e.pointer;
       _page = page;
       _erasing = widget.editor.tool == EditorTool.eraser ||
@@ -61,6 +122,7 @@ class DocumentViewState extends State<DocumentView> {
       view.inputActive = true;
       widget.renders.inkActive = true;
       _ink.page = page;
+      _ink.surface = onPage ? InkSurface.page : InkSurface.notes;
       _ink.width = widget.editor.width;
       _ink.color = widget.editor.color;
       _sample(e);
@@ -92,14 +154,16 @@ class DocumentViewState extends State<DocumentView> {
 
   void _sample(PointerEvent e) {
     final page = _page!;
-    final rect = view.layout.pages[page];
+    final rect = _ink.surface == InkSurface.page ? view.layout.pages[page] : view.layout.notes[page];
+    final reference = view.layout.pages[page].size;
     final local = view.toDocument(e.localPosition) - rect.topLeft;
     // End at the page boundary; never bridge unrelated pages with a stroke.
     if (!(Offset.zero & rect.size).contains(local)) { finishInput(); return; }
     if (_erasing) {
       final from = _previousErase ?? local;
       for (final stroke in widget.editor.strokes(page)) {
-        if (strokeIntersects(stroke, rect.size, from, local, 12 / view.scale)) {
+        if (stroke.surface == _ink.surface &&
+            strokeIntersects(stroke, reference, from, local, 12 / view.scale)) {
           _erased.add(stroke.id);
         }
       }
@@ -107,7 +171,8 @@ class DocumentViewState extends State<DocumentView> {
       setState(() => _erasePosition = e.localPosition);
       return;
     }
-    final normalized = normalizePoint(local, rect.size);
+    final normalized = _ink.surface == InkSurface.page ? normalizePoint(local, reference) :
+      Offset(local.dx / reference.width, local.dy / reference.height);
     final range = e.pressureMax - e.pressureMin;
     final pressure = _isPen(e) && range > 0
         ? ((e.pressure - e.pressureMin) / range).clamp(.05, 1.0).toDouble() : .75;
@@ -124,7 +189,8 @@ class DocumentViewState extends State<DocumentView> {
       final now = DateTime.now();
       widget.editor.addStroke(InkStroke(
         id: '${now.microsecondsSinceEpoch}-${_strokeSequence++}', pageIndex: _page!,
-        points: _ink.points, width: _ink.width, color: _ink.color, createdAt: now));
+        points: _ink.points, width: _ink.width, color: _ink.color, createdAt: now,
+        surface: _ink.surface));
     }
     _pointer = null;
     _page = null;
@@ -154,12 +220,14 @@ class DocumentViewState extends State<DocumentView> {
   @override
   void dispose() {
     view.removeListener(_rebuild);
+    widget.editor.removeListener(_syncWritingAreas);
     _ink.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(builder: (context, constraints) {
+    if (view.size != constraints.biggest) { _edgePage = null; _edgePopup = null; }
     view.configure(constraints.biggest);
     final dpr = MediaQuery.devicePixelRatioOf(context);
     final visible = view.visibleDocument;
@@ -167,9 +235,11 @@ class DocumentViewState extends State<DocumentView> {
     return Semantics(label: 'PDF canvas. Pen or mouse draws; touch scrolls and pinches to zoom.',
       child: MouseRegion(cursor: widget.editor.tool == EditorTool.hand
         ? SystemMouseCursors.grab : SystemMouseCursors.precise,
+        onExit: (_) => _hideEdgePopup(),
         child: Listener(
           behavior: HitTestBehavior.opaque,
           onPointerDown: _down, onPointerMove: _move,
+          onPointerHover: _hover,
           onPointerUp: _up, onPointerCancel: _up, onPointerSignal: _signal,
           onPointerPanZoomStart: (_) => _trackpadScale = 1,
           onPointerPanZoomUpdate: (e) {
@@ -196,11 +266,41 @@ class DocumentViewState extends State<DocumentView> {
                     ])),
                   )),
                 ),
+              for (final page in pages)
+                if (view.layout.notes[page].width > 0)
+                  Positioned.fromRect(rect: view.screenRect(view.layout.notes[page]),
+                    child: Semantics(label: 'Writing space for page ${page + 1}',
+                      child: ClipRect(child: DecoratedBox(
+                        decoration: const BoxDecoration(color: Color(0xfffffdf5),
+                          border: Border(left: BorderSide(color: Color(0xffd6d1bf)))),
+                        child: Stack(fit: StackFit.expand, children: [
+                          RepaintBoundary(child: CustomPaint(painter: CommittedInkPainter(
+                            widget.editor, page, view.layout.pages[page].width,
+                            surface: InkSurface.notes, referenceSize: view.pageRect(page).size,
+                            hidden: _erasing && _page == page ? Set.of(_erased) : const {}))),
+                          RepaintBoundary(child: CustomPaint(painter: ActiveInkPainter(
+                            _ink, page, view.layout.pages[page].width,
+                            surface: InkSurface.notes, referenceSize: view.pageRect(page).size))),
+                        ]),
+                      )))),
               if (_erasePosition != null) Positioned(left: _erasePosition!.dx - 12,
                 top: _erasePosition!.dy - 12, width: 24, height: 24,
                 child: IgnorePointer(child: DecoratedBox(decoration: BoxDecoration(
                   shape: BoxShape.circle, color: Colors.white.withValues(alpha: .5),
                   border: Border.all(color: const Color(0xff2947c7), width: 1.5))))),
+              if (_edgePage != null && _edgePopup != null)
+                Positioned.fromRect(rect: _edgePopup!,
+                  child: Material(elevation: 4, color: Theme.of(context).colorScheme.surface,
+                    borderRadius: BorderRadius.circular(10), clipBehavior: Clip.antiAlias,
+                    child: TextButton.icon(
+                      key: const ValueKey('edge-writing-space'),
+                      onPressed: _addSpaceAtEdge,
+                      icon: const Icon(Icons.add, size: 18),
+                      label: Text(widget.editor.document.writingAreas[_edgePage] == null
+                        ? 'Add writing space'
+                        : widget.editor.document.writingAreas[_edgePage]!.visible
+                          ? 'Add more space' : 'Show writing space'),
+                    ))),
             ])),
           ),
         ),

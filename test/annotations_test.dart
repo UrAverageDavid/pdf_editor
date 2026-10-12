@@ -10,6 +10,63 @@ import 'package:papertrail/features/document/app_document.dart';
 import 'helpers.dart';
 
 void main() {
+  test('legacy notes load without changing original page coordinates', () {
+    final json = sampleDocument().toJson();
+    json['schema'] = 1;
+    json.remove('writingAreas');
+    json['strokes'] = [stroke('legacy').toJson()..remove('surface')];
+    final loaded = AppDocument.fromJson(json, '/source.pdf');
+    expect(loaded.writingAreas, isEmpty);
+    expect(loaded.annotations[0]!.single.surface, InkSurface.page);
+    expect(loaded.annotations[0]!.single.points.first.x, .1);
+  });
+
+  test('writing area edits undo and redo; hidden notes survive serialization', () async {
+    final repository = MemoryRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    editor.addStroke(stroke('original'));
+    editor.expandWritingArea(0);
+    editor.expandWritingArea(0);
+    editor.expandWritingArea(0);
+    editor.addStroke(InkStroke(id: 'note', pageIndex: 0, surface: InkSurface.notes,
+      points: const [InkPoint(1.2, .3, .8, 1)], width: 2, color: 0xff000000,
+      createdAt: DateTime.utc(2026)));
+    editor.toggleWritingArea(0);
+    expect(editor.document.writingAreas[0]!.visible, isFalse);
+    editor.undo();
+    expect(editor.document.writingAreas[0]!.visible, isTrue);
+    editor.redo();
+    await editor.flush();
+    final loaded = AppDocument.fromJson(repository.saves.last, '/source.pdf');
+    expect(loaded.writingAreas[0]!.width, 1.5);
+    expect(loaded.writingAreas[0]!.visible, isFalse);
+    expect(loaded.annotations[0]!.last.points.single.x, 1.2);
+    expect(loaded.annotations[0]!.first.toJson(), stroke('original').toJson());
+    editor.undo(); // Hide.
+    editor.undo(); // Note.
+    editor.undo(); // Expansion.
+    expect(editor.document.writingAreas[0]!.width, 1);
+    editor.undo();
+    editor.undo();
+    expect(editor.document.writingAreas, isEmpty);
+    expect(editor.strokes(0).single.id, 'original');
+    await editor.flush();
+    editor.dispose();
+  });
+
+  test('invalid writing areas and orphaned note ink are rejected', () {
+    for (final width in [-1, 0, double.infinity]) {
+      final json = sampleDocument().toJson();
+      json['writingAreas'] = {'0': {'width': width, 'visible': true}};
+      expect(() => AppDocument.fromJson(json, ''), throwsFormatException);
+    }
+    final json = sampleDocument().toJson();
+    json['strokes'] = [stroke('orphan').toJson()..['surface'] = 'notes'];
+    expect(() => AppDocument.fromJson(json, ''), throwsFormatException);
+    json['writingAreas'] = {'0': {'width': .5, 'visible': true}};
+    expect(() => AppDocument.fromJson(json, ''), throwsFormatException);
+  });
+
   test('group erase, undo, redo preserve original stroke paint order', () async {
     final editor = EditorController(sampleDocument(), MemoryRepository());
     for (final id in ['a', 'b', 'c', 'd']) { editor.addStroke(stroke(id)); }

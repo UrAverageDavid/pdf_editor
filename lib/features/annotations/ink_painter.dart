@@ -33,30 +33,36 @@ class StrokeSmoother {
 }
 
 class CommittedInkPainter extends CustomPainter {
-  CommittedInkPainter(this.editor, this.page, this.pageWidth, {this.hidden = const {}})
+  CommittedInkPainter(this.editor, this.page, this.pageWidth, {this.hidden = const {},
+    this.surface = InkSurface.page, this.referenceSize})
       : super(repaint: editor.pageSignal(page));
   final EditorController editor;
   final int page;
   final double pageWidth;
   final Set<String> hidden;
+  final InkSurface surface;
+  final Size? referenceSize;
 
   @override
   void paint(Canvas canvas, Size size) {
     for (final stroke in editor.strokes(page)) {
-      if (!hidden.contains(stroke.id)) {
-        StrokeSmoother.paint(canvas, size, stroke.points,
-            stroke.width * size.width / pageWidth, Color(stroke.color));
+      if (stroke.surface == surface && !hidden.contains(stroke.id)) {
+        final reference = referenceSize ?? size;
+        StrokeSmoother.paint(canvas, reference, stroke.points,
+            stroke.width * reference.width / pageWidth, Color(stroke.color));
       }
     }
   }
 
   @override
   bool shouldRepaint(CommittedInkPainter old) => old.editor != editor ||
-      old.page != page || old.pageWidth != pageWidth || old.hidden != hidden;
+      old.page != page || old.pageWidth != pageWidth || old.hidden != hidden ||
+      old.surface != surface || old.referenceSize != referenceSize;
 }
 
 class ActiveInk extends ChangeNotifier {
   int? page;
+  InkSurface surface = InkSurface.page;
   double width = 2;
   int color = 0xff2947c7;
   final points = <InkPoint>[];
@@ -65,18 +71,22 @@ class ActiveInk extends ChangeNotifier {
 }
 
 class ActiveInkPainter extends CustomPainter {
-  ActiveInkPainter(this.ink, this.page, this.pageWidth) : super(repaint: ink);
+  ActiveInkPainter(this.ink, this.page, this.pageWidth,
+    {this.surface = InkSurface.page, this.referenceSize}) : super(repaint: ink);
   final ActiveInk ink;
   final int page;
   final double pageWidth;
+  final InkSurface surface;
+  final Size? referenceSize;
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (ink.page == page) StrokeSmoother.paint(canvas, size, ink.points,
-        ink.width * size.width / pageWidth, Color(ink.color));
+    final reference = referenceSize ?? size;
+    if (ink.page == page && ink.surface == surface) StrokeSmoother.paint(canvas, reference, ink.points,
+        ink.width * reference.width / pageWidth, Color(ink.color));
   }
 
   @override
   bool shouldRepaint(ActiveInkPainter old) => old.ink != ink || old.page != page ||
-      old.pageWidth != pageWidth;
+      old.pageWidth != pageWidth || old.surface != surface || old.referenceSize != referenceSize;
 }

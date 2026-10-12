@@ -8,7 +8,11 @@ import 'ink.dart';
 enum SaveState { saved, pending, saving, failed }
 
 class StrokeChange {
-  StrokeChange({this.added = const [], this.removed = const {}});
+  StrokeChange({this.added = const [], this.removed = const {},
+    this.areaPage, this.areaBefore, this.areaAfter});
+  final int? areaPage;
+  final WritingArea? areaBefore;
+  final WritingArea? areaAfter;
   final List<InkStroke> added;
   /// Original indices preserve paint order when an erase is undone.
   final Map<InkStroke, int> removed;
@@ -47,6 +51,23 @@ class EditorController extends ChangeNotifier {
 
   void addStroke(InkStroke stroke) => execute(StrokeChange(added: [stroke]));
 
+  void expandWritingArea(int page) {
+    final area = document.writingAreas[page];
+    _setWritingArea(page, WritingArea(width: (area?.width ?? 0) + .5));
+  }
+
+  void toggleWritingArea(int page) {
+    final area = document.writingAreas[page];
+    _setWritingArea(page, area == null ? const WritingArea() :
+      WritingArea(width: area.width, visible: !area.visible));
+  }
+
+  void _setWritingArea(int page, WritingArea area) {
+    if (page < 0 || page >= document.pageCount) throw RangeError('Invalid page');
+    execute(StrokeChange(areaPage: page,
+      areaBefore: document.writingAreas[page], areaAfter: area));
+  }
+
   void erase(Set<String> ids, int page) {
     final existing = strokes(page);
     final removed = <InkStroke, int>{};
@@ -82,6 +103,13 @@ class EditorController extends ChangeNotifier {
 
   void _apply(StrokeChange change, {required bool forward}) {
     final affected = <int>{};
+    final areaPage = change.areaPage;
+    if (areaPage != null) {
+      final area = forward ? change.areaAfter : change.areaBefore;
+      if (area == null) { document.writingAreas.remove(areaPage); }
+      else { document.writingAreas[areaPage] = area; }
+      affected.add(areaPage);
+    }
     for (final stroke in change.added) {
       final list = document.annotations.putIfAbsent(stroke.pageIndex, () => []);
       if (forward) { list.add(stroke); } else { list.removeWhere((s) => s.id == stroke.id); }

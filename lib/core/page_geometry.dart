@@ -24,19 +24,30 @@ Offset normalizedToPdf(Offset point, Rect cropBox, int clockwiseDegrees) {
 }
 
 class PageLayout {
-  PageLayout(List<Size> sizes) {
-    width = sizes.fold<double>(0, (a, b) => a > b.width ? a : b.width);
+  PageLayout(List<Size> sizes, {Map<int, double> rightWidths = const {}}) {
+    pdfWidth = sizes.fold<double>(0, (a, b) => a > b.width ? a : b.width);
+    var canvasWidth = pdfWidth;
     var top = 20.0;
     pages = List.unmodifiable(sizes.map((size) {
-      final rect = Rect.fromLTWH((width - size.width) / 2, top, size.width, size.height);
+      final rect = Rect.fromLTWH((pdfWidth - size.width) / 2, top, size.width, size.height);
       top += size.height + 20;
       return rect;
     }));
+    notes = List.unmodifiable(List.generate(pages.length, (page) {
+      final rect = pages[page];
+      final area = Rect.fromLTWH(rect.right, rect.top,
+        rect.width * (rightWidths[page] ?? 0), rect.height);
+      if (area.right > canvasWidth) canvasWidth = area.right;
+      return area;
+    }));
+    width = canvasWidth;
     height = top;
   }
+  late final double pdfWidth;
   late final double width;
   late final double height;
   late final List<Rect> pages;
+  late final List<Rect> notes;
 
   int pageAtY(double y) {
     var lo = 0;
