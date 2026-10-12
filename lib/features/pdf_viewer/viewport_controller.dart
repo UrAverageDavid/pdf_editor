@@ -25,6 +25,9 @@ class ViewportController extends ChangeNotifier {
   double get fitScale => math.max(.05, (size.width - 48) / layout.pdfWidth);
   double get fitWidthZoom => layout.pdfWidth / layout.width;
   double get scale => fitScale * zoom;
+  double get verticalScrollExtent => math.max(0.0, layout.height * scale + 20 - size.height);
+  double get scrollFraction => verticalScrollExtent == 0 ? 0 :
+    (-offset.dy / verticalScrollExtent).clamp(0.0, 1.0).toDouble();
   int get currentPage => layout.pageAtY(toDocument(Offset(size.width / 2, size.height / 2)).dy);
   Rect get visibleDocument => Rect.fromPoints(toDocument(Offset.zero),
       toDocument(Offset(size.width, size.height)));
@@ -50,6 +53,13 @@ class ViewportController extends ChangeNotifier {
   void pan(Offset delta) {
     if (inputActive) return;
     offset += delta;
+    _clamp();
+    notifyListeners();
+  }
+
+  void scrollToFraction(double fraction) {
+    if (inputActive) return;
+    offset = Offset(offset.dx, -verticalScrollExtent * fraction.clamp(0.0, 1.0));
     _clamp();
     notifyListeners();
   }
@@ -89,9 +99,8 @@ class ViewportController extends ChangeNotifier {
 
   void _clamp() {
     final w = layout.width * scale;
-    final h = layout.height * scale;
     offset = Offset(w <= size.width ? (size.width - w) / 2 :
       offset.dx.clamp(size.width - w - 24, 24).toDouble(),
-      offset.dy.clamp(math.min(0.0, size.height - h - 20), 0.0).toDouble());
+      offset.dy.clamp(-verticalScrollExtent, 0.0).toDouble());
   }
 }

@@ -5,6 +5,32 @@ import 'package:papertrail/core/page_geometry.dart';
 import 'package:papertrail/features/pdf_viewer/viewport_controller.dart';
 
 void main() {
+  test('scroll fractions share viewport bounds through zoom and resize', () {
+    final view = ViewportController(List.filled(20, const Size(600, 800)))
+      ..configure(const Size(800, 600))..setZoom(2);
+    view.pan(const Offset(-100, 0));
+    final x = view.offset.dx;
+    view.scrollToFraction(.5);
+    expect(view.scrollFraction, .5);
+    expect(view.offset.dx, x);
+    view.scrollToFraction(2);
+    expect(view.scrollFraction, 1);
+    expect(view.offset.dy, -view.verticalScrollExtent);
+    view.configure(const Size(1000, 800));
+    view.scrollToFraction(1);
+    expect(view.offset.dy, -view.verticalScrollExtent);
+    view.scrollToFraction(-1);
+    expect(view.offset.dy, 0);
+    view.dispose();
+
+    final short = ViewportController([const Size(600, 100)])
+      ..configure(const Size(800, 600))..scrollToFraction(1);
+    expect(short.verticalScrollExtent, 0);
+    expect(short.scrollFraction, 0);
+    expect(short.offset.dy, 0);
+    short.dispose();
+  });
+
   test('navigation reveals the PDF after panning into a wide writing area', () {
     final view = ViewportController(List.filled(3, const Size(612, 792)));
     view.configure(const Size(1000, 800));

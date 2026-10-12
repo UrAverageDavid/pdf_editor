@@ -81,8 +81,12 @@ without vibration. See [Microsoft's pen haptics sample](https://learn.microsoft.
 Feedback stops on lift, cancellation, leaving the drawing surface, focus loss, or
 closing the document. Hand and eraser tools do not trigger writing feedback.
 
-Finger panning stays under the finger and coasts on release. Faster repeated scroll
-signals get a bounded speed boost and ease to a stop. New contact, pen input, zoom,
+The scrollbar stays visible on the right to show your position in the document.
+Drag its thumb with a mouse, pen, or finger, or click/tap the track to jump.
+Scrollbar interaction does not create ink and is disabled during an active pen stroke.
+
+Finger panning stays under the finger and coasts on release with a 35% velocity boost.
+Faster repeated scroll signals get up to a 3× speed boost and ease to a stop. New contact, pen input, zoom,
 page jumps, and focus loss stop momentum. Page images keep their widget identity
 when the visible page range shifts, preventing loading flashes during scrolling.
 

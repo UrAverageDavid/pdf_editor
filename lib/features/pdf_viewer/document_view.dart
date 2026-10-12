@@ -11,6 +11,7 @@ import '../annotations/ink.dart';
 import '../annotations/ink_filter.dart';
 import '../annotations/ink_painter.dart';
 import '../annotations/pen_haptics.dart';
+import 'document_scrollbar.dart';
 import 'page_image.dart';
 import 'render_service.dart';
 import 'scroll_motion.dart';
@@ -299,7 +300,8 @@ class DocumentViewState extends State<DocumentView>
     final dpr = MediaQuery.devicePixelRatioOf(context);
     final visible = view.visibleDocument;
     final pages = view.layout.visible(visible).toList();
-    return Semantics(label: 'PDF canvas. Pen or mouse draws; touch scrolls and pinches to zoom.',
+    return Stack(fit: StackFit.expand, children: [
+      Semantics(label: 'PDF canvas. Pen or mouse draws; touch scrolls and pinches to zoom.',
       child: MouseRegion(cursor: widget.editor.tool == EditorTool.hand
         ? SystemMouseCursors.grab : SystemMouseCursors.precise,
         onExit: (_) => _hideEdgePopup(),
@@ -370,6 +372,13 @@ class DocumentViewState extends State<DocumentView>
           ),
         ),
       ),
-    );
+      ),
+      Positioned(top: 8, bottom: 8, right: 0, width: 24,
+        child: Listener(onPointerSignal: _signal,
+          child: DocumentScrollbar(viewport: view, onInteractionStart: () {
+          _scroll.stop();
+          _hideEdgePopup();
+        }))),
+    ]);
   });
 }

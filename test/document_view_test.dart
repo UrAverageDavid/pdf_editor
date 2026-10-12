@@ -40,6 +40,71 @@ class FakePdf implements PdfDocumentHandle {
 }
 
 void main() {
+  for (final kind in [PointerDeviceKind.mouse, PointerDeviceKind.stylus, PointerDeviceKind.touch]) {
+    testWidgets('$kind scrollbar follows navigation and drags without creating ink', (tester) async {
+      final document = FakePdf();
+      final renders = RenderService(document);
+      final editor = EditorController(sampleDocument(), MemoryRepository());
+      final viewport = ViewportController(document.pageSizes);
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+        editor: editor, renders: renders, viewport: viewport))));
+      await tester.pumpAndSettle();
+      final rail = find.byKey(const ValueKey('document-scrollbar'));
+      final thumb = find.byKey(const ValueKey('document-scrollbar-thumb'));
+      final track = tester.getRect(rail);
+      expect(tester.getRect(thumb).top, track.top);
+      viewport.jumpTo(160);
+      await tester.pumpAndSettle();
+      expect(tester.getCenter(thumb).dy, closeTo(track.center.dy, 12));
+
+      final drag = await tester.startGesture(tester.getCenter(thumb), kind: kind);
+      await drag.moveTo(Offset(track.center.dx, track.bottom));
+      await drag.up();
+      await tester.pumpAndSettle();
+      expect(viewport.scrollFraction, 1);
+      expect(tester.getRect(thumb).bottom, closeTo(track.bottom, 1e-8));
+      expect(editor.document.strokeCount, 0);
+
+      final click = await tester.startGesture(Offset(track.center.dx, track.top), kind: kind);
+      await click.up();
+      await tester.pumpAndSettle();
+      expect(viewport.scrollFraction, 0);
+      expect(editor.document.strokeCount, 0);
+      await tester.pump(const Duration(seconds: 1));
+      expect(viewport.scrollFraction, 0); // No momentum after releasing the thumb.
+      await tester.pumpWidget(const SizedBox.shrink());
+      await renders.close();
+      viewport.dispose();
+      editor.dispose();
+    });
+  }
+
+  testWidgets('scrollbar contact cannot move the document during pen input', (tester) async {
+    final document = FakePdf();
+    final renders = RenderService(document);
+    final editor = EditorController(sampleDocument(), MemoryRepository());
+    final viewport = ViewportController(document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    final pen = await tester.startGesture(const Offset(200, 150), kind: PointerDeviceKind.stylus);
+    final before = viewport.offset;
+    final contact = await tester.startGesture(
+      tester.getCenter(find.byKey(const ValueKey('document-scrollbar'))),
+      kind: PointerDeviceKind.touch);
+    await contact.moveBy(const Offset(0, 100));
+    await contact.up();
+    expect(viewport.offset, before);
+    expect(viewport.inputActive, isTrue);
+    await pen.up();
+    expect(editor.document.strokeCount, 1);
+    await editor.flush();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  });
+
   testWidgets('scrolling preserves loaded page state as the visible list shifts', (tester) async {
     final document = FakePdf();
     final renders = RenderService(document);

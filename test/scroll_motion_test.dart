@@ -19,7 +19,8 @@ void main() {
     expect(start - view.offset.dy, inExclusiveRange(0, 100));
     motion.wheel(const Offset(0, -100), const Duration(milliseconds: 16));
     await tester.pumpAndSettle();
-    expect(start - view.offset.dy, greaterThan(200));
+    expect(start - view.offset.dy, greaterThan(400));
+    expect(start - view.offset.dy, lessThanOrEqualTo(600));
     final settled = view.offset;
     await tester.pump(const Duration(seconds: 1));
     expect(view.offset, settled);

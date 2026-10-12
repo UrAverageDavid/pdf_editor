@@ -55,8 +55,10 @@ class ScrollMotion {
       stop();
       return;
     }
-    if (_velocity.distance > 6000) _velocity *= 6000 / _velocity.distance;
     if (_velocity.distance < 60) { stop(); return; }
+    // Boost the release, while keeping direct touch/trackpad dragging 1:1.
+    _velocity *= 1.35;
+    if (_velocity.distance > 8000) _velocity *= 8000 / _velocity.distance;
     _startTicker();
   }
 
@@ -69,7 +71,7 @@ class ScrollMotion {
     final dt = _sampleTime == null ? .1 :
       ((time - _sampleTime!).inMicroseconds / 1000000).clamp(.008, .1);
     final speed = delta.distance / dt;
-    final gain = 1 + ((speed - 500) / 5000).clamp(0.0, .5);
+    final gain = 1 + ((speed - 500) / 2000).clamp(0.0, 2.0);
     _pending += delta * gain;
     _sampleTime = time;
     _startTicker();

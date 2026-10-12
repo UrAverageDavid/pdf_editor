@@ -3,13 +3,14 @@ import 'dart:ui';
 
 import 'ink.dart';
 
-/// A speed-adaptive low-pass (One Euro) filter, in displayed logical pixels.
+/// A speed-adaptive low-pass filter based on One Euro, in logical screen pixels.
 /// Slow handwriting is stabilized; fast strokes increase the cutoff to avoid
 /// trailing the nib. Only new samples are filtered, so previous ink never moves.
 class InkFilter {
   Offset? _raw;
   Offset _position = Offset.zero;
   Offset _velocity = Offset.zero;
+  Offset _fastVelocity = Offset.zero;
   double _pressure = .75;
   int? _time;
   Size _reference = Size.zero;
@@ -22,6 +23,7 @@ class InkFilter {
     _raw = null;
     _time = null;
     _velocity = Offset.zero;
+    _fastVelocity = Offset.zero;
   }
 
   InkPoint add(Offset position, double pressure, int timeMicros, Size reference) {
@@ -34,7 +36,16 @@ class InkFilter {
       final dt = ((timeMicros - _time!) / 1000000).clamp(1 / 240, .05);
       final velocity = (position - _raw!) / dt;
       _velocity += (velocity - _velocity) * _alpha(1, dt);
-      final cutoff = 1.5 + .04 * _velocity.distance;
+      // The 1 Hz estimate rejects jitter but reacts slowly at starts/turns.
+      // A faster estimate can open the filter sooner, after subtracting the
+      // velocity that +/-1 logical pixel of stationary noise can generate.
+      // Keep the original estimate as the floor for sustained slow writing.
+      final fastAlpha = _alpha(10, dt);
+      _fastVelocity += (velocity - _fastVelocity) * fastAlpha;
+      final noiseSpeed = 2 * fastAlpha / dt;
+      final speed = math.max(_velocity.distance,
+        _fastVelocity.distance - noiseSpeed);
+      final cutoff = 1.5 + .04 * speed;
       _position += (position - _position) * _alpha(cutoff, dt);
       _pressure += (pressure - _pressure) * _alpha(8, dt);
     }
