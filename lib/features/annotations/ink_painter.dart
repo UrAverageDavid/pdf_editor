@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -116,9 +117,11 @@ class ActiveInk extends ChangeNotifier {
   InkKind kind = InkKind.pen;
   PenStyle? penStyle;
   final points = <InkPoint>[];
+  // Speculative samples are never part of the stored stroke or stable cache.
+  List<InkPoint> prediction = const [];
   final _renderer = _LiveStrokeRenderer();
   void changed() => notifyListeners();
-  void clear() { page = null; points.clear(); _renderer.reset(); notifyListeners(); }
+  void clear() { page = null; points.clear(); prediction = const []; _renderer.reset(); notifyListeners(); }
   @override
   void dispose() { _renderer.reset(); super.dispose(); }
 }
@@ -136,7 +139,8 @@ class ActiveInkPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final reference = referenceSize ?? size;
     if (ink.page == page && ink.surface == surface) ink._renderer.paint(canvas, reference, ink.points,
-        ink.width * reference.width / pageWidth, Color(ink.color), kind: ink.kind, penStyle: ink.penStyle);
+        ink.width * reference.width / pageWidth, Color(ink.color), kind: ink.kind,
+        penStyle: ink.penStyle, prediction: ink.prediction);
   }
 
   @override
@@ -173,7 +177,7 @@ class _LiveStrokeRenderer {
   }
 
   void paint(Canvas canvas, Size size, List<InkPoint> points, double width, Color color,
-      {required InkKind kind, PenStyle? penStyle}) {
+      {required InkKind kind, PenStyle? penStyle, List<InkPoint> prediction = const []}) {
     if (points.isEmpty) return;
     if (_size != size || _width != width || _color != color || _kind != kind ||
         _style != penStyle || points.length < _lastCount) {
@@ -196,9 +200,16 @@ class _LiveStrokeRenderer {
       final paint = Paint()..color = color.withValues(alpha: .3)
         ..style = PaintingStyle.stroke..strokeWidth = width
         ..strokeCap = StrokeCap.round..strokeJoin = StrokeJoin.round;
-      if (points.length == 1) {
+      // Append the temporary tip to a copy, then draw once. Drawing two paths
+      // would darken the overlap where confirmed and predicted ink meet.
+      final path = prediction.isEmpty ? _markerPath : Path.from(_markerPath);
+      for (final point in prediction) {
+        final p = point.inSize(size);
+        path.lineTo(p.dx, p.dy);
+      }
+      if (points.length == 1 && prediction.isEmpty) {
         canvas.drawCircle(points.first.inSize(size), width / 2, paint..style = PaintingStyle.fill);
-      } else { canvas.drawPath(_markerPath, paint); }
+      } else { canvas.drawPath(path, paint); }
       return;
     }
     final stableEnd = points.length - _tailSamples;
@@ -211,7 +222,22 @@ class _LiveStrokeRenderer {
       _nextSegment += _chunkSegments;
     }
     for (final picture in _chunks) { canvas.drawPicture(picture); }
-    StrokeSmoother.paint(canvas, size, points, width, color,
+    StrokeSmoother.paint(canvas, size, prediction.isEmpty ? points : _PreviewPoints(points, prediction), width, color,
       kind: kind, penStyle: penStyle, startSegment: _nextSegment);
   }
+}
+
+/// Read-only concatenation: extending the live tail must not copy a long stroke.
+class _PreviewPoints extends ListBase<InkPoint> {
+  _PreviewPoints(this.actual, this.predicted);
+  final List<InkPoint> actual;
+  final List<InkPoint> predicted;
+  @override
+  int get length => actual.length + predicted.length;
+  @override
+  InkPoint operator [](int index) => index < actual.length ? actual[index] : predicted[index - actual.length];
+  @override
+  set length(int value) => throw UnsupportedError('Read-only ink preview');
+  @override
+  void operator []=(int index, InkPoint value) => throw UnsupportedError('Read-only ink preview');
 }

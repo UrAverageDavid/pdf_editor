@@ -41,6 +41,75 @@ class FakePdf implements PdfDocumentHandle {
 }
 
 void main() {
+  testWidgets('stylus prediction expires while held and never enters saved strokes', (tester) async {
+    final renders = RenderService(FakePdf());
+    final repository = MemoryRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    final viewport = ViewportController(renders.document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    final ink = tester.widgetList<CustomPaint>(find.byType(CustomPaint))
+      .map((p) => p.painter).whereType<ActiveInkPainter>().first.ink;
+    final pen = await tester.startGesture(const Offset(200, 150), kind: PointerDeviceKind.stylus);
+    await pen.moveTo(const Offset(205, 150), timeStamp: const Duration(milliseconds: 10));
+    await pen.moveTo(const Offset(210, 150), timeStamp: const Duration(milliseconds: 20));
+    await tester.pump();
+    expect(ink.prediction, hasLength(2));
+    expect(ink.prediction.last.x, greaterThan(ink.points.last.x));
+    final actualCount = ink.points.length;
+    await tester.pump(const Duration(milliseconds: 40));
+    expect(ink.prediction, isEmpty);
+    expect(ink.points, hasLength(actualCount));
+    for (var i = 0; i < 3; i++) {
+      await pen.moveTo(Offset(215.0 + 5 * i, 150), timeStamp: Duration(milliseconds: 70 + 10 * i));
+    }
+    expect(ink.prediction, isNotEmpty);
+    final predictedX = ink.prediction.last.x;
+    await pen.up();
+    expect(ink.prediction, isEmpty);
+    final stroke = editor.strokes(0).single;
+    expect(stroke.points.every((point) => point.x < predictedX), isTrue);
+    final lastInput = viewport.toDocument(const Offset(225, 150)) - viewport.layout.pages[0].topLeft;
+    expect(stroke.points.last.x, closeTo(lastInput.dx / viewport.layout.pages[0].width, .000001));
+    await editor.flush();
+    final restored = AppDocument.fromJson(repository.saves.last, '');
+    expect(restored.annotations[0]!.single.points.last.x, stroke.points.last.x);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  });
+
+  for (final ending in ['cancel', 'focus loss', 'dispose']) {
+    testWidgets('prediction clears safely on $ending', (tester) async {
+      final renders = RenderService(FakePdf());
+      final editor = EditorController(sampleDocument(), MemoryRepository());
+      final viewport = ViewportController(renders.document.pageSizes);
+      final key = GlobalKey<DocumentViewState>();
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+        key: key, editor: editor, renders: renders, viewport: viewport))));
+      await tester.pumpAndSettle();
+      final ink = tester.widgetList<CustomPaint>(find.byType(CustomPaint))
+        .map((p) => p.painter).whereType<ActiveInkPainter>().first.ink;
+      final pen = await tester.startGesture(const Offset(200, 150), kind: PointerDeviceKind.stylus);
+      await pen.moveTo(const Offset(205, 150), timeStamp: const Duration(milliseconds: 10));
+      await pen.moveTo(const Offset(210, 150), timeStamp: const Duration(milliseconds: 20));
+      expect(ink.prediction, isNotEmpty);
+      if (ending == 'cancel') { await pen.cancel(); }
+      if (ending == 'focus loss') {
+        key.currentState!.didChangeAppLifecycleState(AppLifecycleState.inactive);
+      }
+      if (ending != 'dispose') { expect(ink.prediction, isEmpty); }
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(tester.takeException(), isNull);
+      await renders.close();
+      viewport.dispose();
+      editor.dispose();
+    });
+  }
+
   for (final width in [390.0, 1000.0]) {
     testWidgets('writing space paper menu sets lines, grids and sizes at width $width', (tester) async {
       tester.view.physicalSize = Size(width, 900);

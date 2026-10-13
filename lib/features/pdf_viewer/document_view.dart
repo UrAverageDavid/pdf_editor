@@ -11,6 +11,7 @@ import '../annotations/editor_controller.dart';
 import '../annotations/ink.dart';
 import '../annotations/ink_filter.dart';
 import '../annotations/ink_painter.dart';
+import '../annotations/ink_predictor.dart';
 import '../annotations/pen_haptics.dart';
 import '../annotations/shape_detector.dart';
 import '../document/app_document.dart';
@@ -38,6 +39,8 @@ class DocumentViewState extends State<DocumentView>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final _ink = ActiveInk();
   final _filter = InkFilter();
+  final _predictor = InkPredictor();
+  Timer? _predictionExpiry;
   final _haptics = PenHaptics();
   final _cursor = ValueNotifier<Offset?>(null);
   bool _detectShape = false;
@@ -178,6 +181,7 @@ class DocumentViewState extends State<DocumentView>
       _ink.kind = widget.editor.highlighting ? InkKind.highlighter : InkKind.pen;
       _detectShape = widget.editor.detectShapes && _ink.kind == InkKind.pen;
       _filter.reset();
+      _predictor.reset();
       _noteRightEdges.clear();
       _activeNotesRight = 0;
       if (_ink.surface == InkSurface.notes) {
@@ -275,11 +279,25 @@ class DocumentViewState extends State<DocumentView>
     // Store the filtered samples so live ink, saved ink and erasing agree.
     _ink.points.add(_filter.add(local * view.scale, pressure,
       e.timeStamp.inMicroseconds, reference * view.scale));
+    _predictionExpiry?.cancel();
+    _ink.prediction = _isPen(e) ? _predictor.add(local * view.scale,
+      e.timeStamp.inMicroseconds, reference * view.scale, _ink.points.last.pressure) : const [];
+    if (_ink.prediction.isNotEmpty) {
+      // Drivers may stop sending events while the nib rests on the screen.
+      // Remove speculative ink even when no stationary sample arrives.
+      _predictionExpiry = Timer(InkPredictor.expiry, () {
+        _ink.prediction = const [];
+        _predictor.reset();
+        _ink.changed();
+      });
+    }
     _ink.changed();
   }
 
   /// Also used before focus loss, document switching, export, and normal exit.
   void finishInput({bool recognizeShape = false}) {
+    _predictionExpiry?.cancel();
+    _predictor.reset();
     _scroll.stop();
     if (_penInking) unawaited(_haptics.stop());
     _penInking = false;
@@ -381,6 +399,7 @@ class DocumentViewState extends State<DocumentView>
 
   @override
   void dispose() {
+    _predictionExpiry?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     GestureBinding.instance.pointerRouter.removeGlobalRoute(_inputActivity);
     HardwareKeyboard.instance.removeHandler(_keyActivity);

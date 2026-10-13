@@ -90,6 +90,13 @@ and size in the popover. Fountain, Ball, and Brush also offer pressure sensitivi
 and tip sharpness. Valid edits save automatically with the document; editing or
 deleting a preset leaves existing strokes unchanged.
 
+During stylus input, a temporary predicted tip helps close the visible gap between
+the pen and the ink. Steady motion projects up to 15 ms ahead, capped at 24 logical
+screen pixels at every zoom. Turns, slowing, and unstable motion reduce prediction;
+resting for 32 ms without another sample removes it. Predictions are replaced on
+each sample and removed on lift, cancellation, or focus loss. Only actual input
+is saved, recognized as shapes, erased, or used to size the writing space.
+
 Highlighter is a pen type, so you can create several highlighter presets with their
 own colors and widths. **M** selects an existing highlighter preset, or creates one
 for a document that has none; **P** resumes the selected preset after Hand or Eraser.
@@ -251,6 +258,16 @@ Run `flutter test tool/ink_render_benchmark_test.dart --reporter expanded` to me
 Dart-side recording of long live strokes. This benchmark excludes GPU rendering,
 display refresh, and physical pen latency. Raster comparison tests check that the
 cached live renderer matches saved ink across cache boundaries and layout changes.
+
+The predictor uses our own conservative velocity extrapolation, informed by
+[Windows Ink's adaptive prediction horizon](https://learn.microsoft.com/en-us/uwp/api/windows.ui.input.inking.inkmodelerattributes.predictiontime?view=winrt-26100).
+Microsoft documents a default 15 ms horizon that shrinks in less favorable conditions;
+it does not publish OneNote's exact prediction algorithm in that documentation.
+[Windows Ink also renders wet ink on a low-latency background thread](https://learn.microsoft.com/en-us/windows/uwp/ui-input/pen-and-stylus-interactions).
+This Flutter preview still uses Flutter's frame pipeline, so it does not reproduce
+that native path or guarantee OneNote-equivalent latency. Validate quick loops,
+corners, stops, and pen lift on Surface in release mode; excessive prediction can
+cause temporary overshoot even though saved strokes remain accurate.
 
 ## Remaining MVP work
 

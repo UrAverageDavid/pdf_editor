@@ -24,7 +24,7 @@ Future<void> expectLiveMatchesStored(ActiveInk ink, Size size) async {
   final actual = await rasterize((canvas) =>
     ActiveInkPainter(ink, 0, 100).paint(canvas, size), size);
   final expected = await rasterize((canvas) => StrokeSmoother.paint(canvas,
-    size, ink.points, ink.width * size.width / 100, Color(ink.color),
+    size, [...ink.points, ...ink.prediction], ink.width * size.width / 100, Color(ink.color),
     kind: ink.kind, penStyle: ink.penStyle), size);
   expect(actual, orderedEquals(expected), reason:
     '${ink.penStyle?.type}: ${ink.points.length} points at $size');
@@ -53,6 +53,26 @@ Future<int> inkCoverage(PenStyle style, double pressure) async {
 }
 
 void main() {
+  test('predictions replace and retract without entering cached geometry or darkening highlights', () async {
+    for (final type in PenType.values) {
+      final ink = ActiveInk()..page = 0..width = 4
+        ..penStyle = PenStyle(type: type, tipSharpness: 1);
+      for (final count in [12, 137, 138, 265, 400]) {
+        appendSamples(ink, count);
+        for (final tip in [.8, .2]) {
+          ink.prediction = [InkPoint(tip, .5, .5, count * 4167 + 15000)];
+          await expectLiveMatchesStored(ink, const Size(100, 100));
+          expect(ink.points, hasLength(count));
+        }
+        ink.prediction = const [];
+        await expectLiveMatchesStored(ink, const Size(100, 100));
+      }
+      ink.clear();
+      expect(ink.prediction, isEmpty);
+      ink.dispose();
+    }
+  });
+
   test('cached live strokes match stored ink across chunk boundaries and changing tails', () async {
     for (final type in PenType.values) {
       final ink = ActiveInk()..page = 0..width = 4
