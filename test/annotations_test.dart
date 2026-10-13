@@ -154,7 +154,68 @@ void main() {
       const Offset(0, 0), const Offset(10, 0), 1), isFalse);
   });
 
-  test('autosave drains edits arriving during an in-flight save', () async {
+  testWidgets('autosave waits one second after the last input without notifying listeners', (tester) async {
+    final repository = MemoryRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    var notifications = 0;
+    editor.addListener(() => notifications++);
+    editor.addStroke(stroke('first'));
+    final beforeInput = notifications;
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 700));
+      editor.recordInputActivity();
+      expect(repository.saves, isEmpty);
+    }
+    expect(notifications, beforeInput);
+    await tester.pump(const Duration(milliseconds: 999));
+    expect(repository.saves, isEmpty);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(repository.saves, hasLength(1));
+    expect(editor.saveState, SaveState.saved);
+    editor.recordInputActivity();
+    await tester.pump(const Duration(seconds: 2));
+    expect(repository.saves, hasLength(1));
+    editor.dispose();
+  });
+
+  testWidgets('autosave waits for idle again when edits arrive during a save', (tester) async {
+    final repository = DelayedRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    editor.addStroke(stroke('first'));
+    await tester.pump(const Duration(seconds: 1));
+    expect(repository.saves, hasLength(1));
+    editor.addStroke(stroke('second'));
+    await tester.pump(const Duration(milliseconds: 600));
+    repository.gate.complete();
+    await tester.pump();
+    expect(repository.saves, hasLength(1));
+    expect(editor.saveState, SaveState.pending);
+    await tester.pump(const Duration(milliseconds: 399));
+    expect(repository.saves, hasLength(1));
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(repository.saves, hasLength(2));
+    expect((repository.saves.last['strokes'] as List<dynamic>), hasLength(2));
+    expect(editor.isDirty, isFalse);
+    editor.dispose();
+  });
+
+  testWidgets('explicit flush upgrades an in-flight autosave and bypasses idle delay', (tester) async {
+    final repository = DelayedRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    editor.addStroke(stroke('first'));
+    await tester.pump(const Duration(seconds: 1));
+    editor.addStroke(stroke('second'));
+    editor.recordInputActivity();
+    final saving = editor.flush();
+    repository.gate.complete();
+    await tester.pump();
+    await saving;
+    expect(repository.saves, hasLength(2));
+    expect(editor.isDirty, isFalse);
+    editor.dispose();
+  });
+
+  test('explicit flush drains edits arriving during an in-flight save', () async {
     final repository = DelayedRepository();
     final editor = EditorController(sampleDocument(), repository);
     editor.addStroke(stroke('first'));

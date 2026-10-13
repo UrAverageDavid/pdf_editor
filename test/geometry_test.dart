@@ -5,6 +5,23 @@ import 'package:papertrail/core/page_geometry.dart';
 import 'package:papertrail/features/pdf_viewer/viewport_controller.dart';
 
 void main() {
+  test('growing a centered canvas during input never moves the page under the pen', () {
+    final view = ViewportController([const Size(612, 792)]);
+    view.configure(const Size(1000, 800));
+    view.setWritingAreas({0: .5});
+    view.setZoom(.45);
+    final original = view.pageRect(0);
+    final offset = view.offset;
+    view.inputActive = true;
+    view.setWritingAreas({0: .7});
+    expect(view.pageRect(0), original);
+    expect(view.offset, offset);
+    view.setWritingAreas({0: 3});
+    expect(view.pageRect(0), original);
+    expect(view.offset, offset);
+    view.dispose();
+  });
+
   test('scroll fractions share viewport bounds through zoom and resize', () {
     final view = ViewportController(List.filled(20, const Size(600, 800)))
       ..configure(const Size(800, 600))..setZoom(2);

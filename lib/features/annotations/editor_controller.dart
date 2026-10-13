@@ -21,7 +21,7 @@ class StrokeChange {
 
 class EditorController extends ChangeNotifier {
   EditorController(this.document, this.repository,
-      {this.debounce = const Duration(milliseconds: 450)});
+      {this.debounce = const Duration(seconds: 1)});
   final AppDocument document;
   final AnnotationRepository repository;
   final Duration debounce;
@@ -30,6 +30,7 @@ class EditorController extends ChangeNotifier {
   final _redo = <StrokeChange>[];
   Timer? _timer;
   Future<void>? _saving;
+  bool _flushRequested = false;
   int _revision = 0;
   int _savedRevision = 0;
   bool _disposed = false;
@@ -107,7 +108,16 @@ class EditorController extends ChangeNotifier {
   }
   void toggleShapeDetection() { detectShapes = !detectShapes; notifyListeners(); }
 
-  void addStroke(InkStroke stroke) => execute(StrokeChange(added: [stroke]));
+  /// Automatic space resizing belongs to the stroke's single undo/redo step.
+  void addStroke(InkStroke stroke, {double? writingAreaWidth}) {
+    final before = document.writingAreas[stroke.pageIndex];
+    final resize = stroke.surface == InkSurface.notes && before != null &&
+      writingAreaWidth != null && writingAreaWidth.isFinite && writingAreaWidth > 0 && writingAreaWidth != before.width;
+    execute(StrokeChange(added: [stroke],
+      areaPage: resize ? stroke.pageIndex : null,
+      areaBefore: resize ? before : null,
+      areaAfter: resize ? WritingArea(width: writingAreaWidth, visible: before.visible) : null));
+  }
 
   void expandWritingArea(int page) {
     final area = document.writingAreas[page];
@@ -126,13 +136,18 @@ class EditorController extends ChangeNotifier {
       areaBefore: document.writingAreas[page], areaAfter: area));
   }
 
-  void erase(Set<String> ids, int page) {
+  void erase(Set<String> ids, int page, {double? writingAreaWidth}) {
     final existing = strokes(page);
     final removed = <InkStroke, int>{};
     for (var i = 0; i < existing.length; i++) {
       if (ids.contains(existing[i].id)) removed[existing[i]] = i;
     }
-    if (removed.isNotEmpty) execute(StrokeChange(removed: removed));
+    final before = document.writingAreas[page];
+    final resize = before != null && writingAreaWidth != null &&
+      writingAreaWidth.isFinite && writingAreaWidth > 0 && writingAreaWidth != before.width;
+    if (removed.isNotEmpty) execute(StrokeChange(removed: removed,
+      areaPage: resize ? page : null, areaBefore: resize ? before : null,
+      areaAfter: resize ? WritingArea(width: writingAreaWidth, visible: before.visible) : null));
   }
 
   void execute(StrokeChange change) {
@@ -194,13 +209,28 @@ class EditorController extends ChangeNotifier {
     document.modifiedAt = DateTime.now();
     saveState = SaveState.pending;
     notifyListeners();
-    _timer?.cancel();
-    _timer = Timer(debounce, () { unawaited(flush().catchError((Object _) {})); });
+    recordInputActivity();
   }
 
-  /// One writer; keep draining if edits arrived while a snapshot was saving.
-  Future<void> flush() {
+  /// Input postpones autosave without dirtying the document or rebuilding ink.
+  void recordInputActivity() {
+    if (_disposed || !isDirty) return;
     _timer?.cancel();
+    _timer = Timer(debounce, () {
+      _timer = null;
+      unawaited(_save().catchError((Object _) {}));
+    });
+  }
+
+  /// Explicit saves (including close/background) drain all edits immediately.
+  Future<void> flush() => _save(force: true);
+
+  Future<void> _save({bool force = false}) {
+    if (force) {
+      _timer?.cancel();
+      _timer = null;
+      if (isDirty || _saving != null) _flushRequested = true;
+    }
     if (_saving != null) return _saving!;
     if (!isDirty) return Future<void>.value();
     final future = Future<void>.microtask(_drain);
@@ -211,6 +241,9 @@ class EditorController extends ChangeNotifier {
   Future<void> _drain() async {
     try {
       while (isDirty) {
+        // A new input event/commit during an autosave gets its own idle window.
+        // An explicit flush can upgrade that same writer to drain immediately.
+        if (!_flushRequested && (_disposed || _timer != null)) break;
         final revision = _revision;
         final snapshot = document.toJson();
         saveState = SaveState.saving;
@@ -219,13 +252,15 @@ class EditorController extends ChangeNotifier {
         _savedRevision = revision;
       }
       saveError = null;
-      saveState = SaveState.saved;
+      saveState = isDirty ? SaveState.pending : SaveState.saved;
+      if (!isDirty) { _timer?.cancel(); _timer = null; }
     } catch (error) {
       saveError = error;
       saveState = SaveState.failed;
       rethrow;
     } finally {
       _saving = null;
+      _flushRequested = false;
       _notify();
     }
   }

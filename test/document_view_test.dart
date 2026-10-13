@@ -40,6 +40,236 @@ class FakePdf implements PdfDocumentHandle {
 }
 
 void main() {
+  for (final zoom in [.45, 1.5]) {
+    testWidgets('writing space keeps 40 screen pixels clear at zoom $zoom and grows with one undo step', (tester) async {
+      final renders = RenderService(FakePdf());
+      final repository = MemoryRepository();
+      final saved = sampleDocument();
+      saved.writingAreas[0] = const WritingArea();
+      final editor = EditorController(saved, repository);
+      final viewport = ViewportController(renders.document.pageSizes);
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+        editor: editor, renders: renders, viewport: viewport))));
+      await tester.pumpAndSettle();
+      viewport.setZoom(zoom);
+      viewport.revealWritingArea(0);
+      await tester.pumpAndSettle();
+      final originalPage = viewport.pageRect(0);
+      final originalNotes = viewport.screenRect(viewport.layout.notes[0]);
+      final originalOffset = viewport.offset;
+      final start = Offset(originalNotes.right - 20, (originalNotes.top + 80).clamp(80.0, 500.0).toDouble());
+      var notifications = 0;
+      editor.addListener(() => notifications++);
+      final pen = await tester.startGesture(start, kind: PointerDeviceKind.stylus);
+      await tester.pump();
+      expect(viewport.screenRect(viewport.layout.notes[0]).right - start.dx, greaterThanOrEqualTo(40));
+      expect(viewport.pageRect(0), originalPage);
+      expect(viewport.offset, originalOffset);
+      final end = Offset(originalNotes.right + 10, start.dy + 15);
+      await pen.moveTo(end);
+      await tester.pump();
+      expect(viewport.screenRect(viewport.layout.notes[0]).right - end.dx, greaterThanOrEqualTo(40));
+      expect(viewport.pageRect(0), originalPage);
+      expect(editor.document.writingAreas[0]!.width, .5); // Growth is transient while writing.
+      expect(editor.document.strokeCount, 0);
+      expect(notifications, 0);
+      expect(repository.saves, isEmpty);
+      await pen.up();
+      await tester.pump();
+      final expanded = editor.document.writingAreas[0]!.width;
+      final ink = editor.strokes(0).single;
+      expect(expanded, greaterThan(.5));
+      expect(ink.surface, InkSurface.notes);
+      expect(ink.points.last.x, greaterThan(.5)); // Crossing the old edge did not end the stroke.
+      final endpoint = viewport.screenRect(viewport.layout.notes[0]).topLeft +
+        ink.points.last.inSize(viewport.layout.pages[0].size) * viewport.scale;
+      expect((endpoint - end).distance, lessThan(.001));
+      expect(viewport.offset, originalOffset);
+      editor.undo();
+      expect(editor.strokes(0), isEmpty);
+      expect(editor.document.writingAreas[0]!.width, .5);
+      expect(editor.canUndo, isFalse);
+      editor.redo();
+      expect(editor.document.writingAreas[0]!.width, expanded);
+      expect(editor.strokes(0).single.toJson(), ink.toJson());
+      await tester.pump(const Duration(seconds: 1));
+      expect(repository.saves, hasLength(1));
+      final reopened = AppDocument.fromJson(repository.saves.single, '');
+      expect(reopened.writingAreas[0]!.width, expanded);
+      expect(reopened.annotations[0]!.single.toJson(), ink.toJson());
+      await tester.pumpWidget(const SizedBox.shrink());
+      await renders.close();
+      viewport.dispose();
+      editor.dispose();
+    });
+  }
+
+  testWidgets('writing space shrinks to 40 px around all notes and shrinks after erasing', (tester) async {
+    final renders = RenderService(FakePdf());
+    final repository = MemoryRepository();
+    final saved = sampleDocument();
+    saved.writingAreas[0] = const WritingArea(width: 1);
+    InkStroke note(String id, double x, double y) => InkStroke(id: id, pageIndex: 0,
+      surface: InkSurface.notes, points: [InkPoint(x - .05, y - .05, .75, 0), InkPoint(x, y, .75, 1)],
+      width: 4, color: 0xff2947c7, createdAt: DateTime.utc(2026));
+    final far = note('far', .7, .3);
+    final near = note('near', .2, .55);
+    saved.annotations[0] = [near, far];
+    final editor = EditorController(saved, repository);
+    final viewport = ViewportController(renders.document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    viewport.setZoom(.45);
+    await tester.pumpAndSettle();
+    Offset point(double x, double y) => viewport.screenRect(viewport.layout.notes[0]).topLeft +
+      Offset(x * 612, y * 792) * viewport.scale;
+    double gap(InkStroke ink) => viewport.screenRect(viewport.layout.notes[0]).right -
+      (point(ink.points.last.x, ink.points.last.y).dx + ink.width * .85 * viewport.scale);
+    final originalOffset = viewport.offset;
+    final originalPage = viewport.pageRect(0);
+    final pen = await tester.startGesture(point(.08, .7), kind: PointerDeviceKind.stylus);
+    await pen.moveTo(point(.12, .72));
+    await tester.pump();
+    expect(gap(far), closeTo(40, 1e-8));
+    expect(viewport.layout.notes[0].width, lessThan(612));
+    expect(viewport.pageRect(0), originalPage);
+    expect(viewport.offset, originalOffset);
+    expect(editor.document.writingAreas[0]!.width, 1);
+    expect(repository.saves, isEmpty);
+    await pen.up();
+    await tester.pump();
+    final fitted = editor.document.writingAreas[0]!.width;
+    expect(fitted, lessThan(1));
+    expect(gap(far), closeTo(40, 1e-8));
+    editor.undo();
+    expect(editor.document.writingAreas[0]!.width, 1);
+    expect(editor.strokes(0), [near, far]);
+    editor.redo();
+    expect(editor.document.writingAreas[0]!.width, fitted);
+    await tester.pump();
+    editor.setTool(EditorTool.eraser);
+    final beforeErase = viewport.offset;
+    final erase = await tester.startGesture(point(.7, .3), kind: PointerDeviceKind.stylus);
+    await erase.up();
+    await tester.pump();
+    expect(editor.strokes(0).any((stroke) => stroke.id == 'far'), isFalse);
+    expect(editor.document.writingAreas[0]!.width, lessThan(fitted));
+    expect(gap(near), closeTo(40, 1e-8));
+    expect(viewport.offset, beforeErase);
+    editor.undo();
+    expect(editor.document.writingAreas[0]!.width, fitted);
+    expect(editor.strokes(0).any((stroke) => stroke.id == 'far'), isTrue);
+    editor.redo();
+    await editor.flush();
+    final loaded = AppDocument.fromJson(repository.saves.last, '');
+    expect(loaded.writingAreas[0]!.width, editor.document.writingAreas[0]!.width);
+    expect(loaded.annotations[0]!.map((s) => s.toJson()), editor.strokes(0).map((s) => s.toJson()));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  });
+
+  testWidgets('hover, erasing, touch, and PDF strokes do not expand writing space', (tester) async {
+    final renders = RenderService(FakePdf());
+    final saved = sampleDocument();
+    saved.writingAreas[0] = const WritingArea();
+    final editor = EditorController(saved, MemoryRepository());
+    final viewport = ViewportController(renders.document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    viewport.setZoom(viewport.fitWidthZoom);
+    await tester.pumpAndSettle();
+    final edge = viewport.screenRect(viewport.layout.notes[0]).topRight + const Offset(-10, 80);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: edge);
+    await mouse.moveTo(edge + const Offset(-1, 1));
+    expect(viewport.layout.notes[0].width, 306);
+    await mouse.removePointer();
+    editor.setTool(EditorTool.eraser);
+    final eraser = await tester.startGesture(edge, kind: PointerDeviceKind.stylus);
+    await eraser.moveTo(edge + const Offset(-10, 10));
+    await eraser.up();
+    expect(viewport.layout.notes[0].width, 306);
+    await tester.pump(const Duration(milliseconds: 200));
+    final touch = await tester.startGesture(edge, kind: PointerDeviceKind.touch);
+    await touch.moveTo(edge + const Offset(-10, 10));
+    await touch.up();
+    expect(viewport.layout.notes[0].width, 306);
+    editor.setTool(EditorTool.pen);
+    final pageEdge = viewport.pageRect(0).topRight + const Offset(-10, 80);
+    final pen = await tester.startGesture(pageEdge, kind: PointerDeviceKind.stylus);
+    await pen.moveTo(pageEdge + const Offset(20, 10));
+    await pen.up();
+    expect(viewport.layout.notes[0].width, 306);
+    expect(editor.strokes(0).single.surface, InkSurface.page);
+    await editor.flush();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  });
+
+  testWidgets('continuous pen movement postpones autosave until one second after lift', (tester) async {
+    final renders = RenderService(FakePdf());
+    final repository = MemoryRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    final viewport = ViewportController(renders.document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    final first = await tester.startGesture(const Offset(200, 150), kind: PointerDeviceKind.stylus);
+    await first.moveTo(const Offset(250, 160));
+    await first.up();
+    await tester.pump(const Duration(milliseconds: 700));
+    final second = await tester.startGesture(const Offset(200, 200), kind: PointerDeviceKind.stylus);
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 700));
+      await second.moveTo(Offset(230 + i * 20, 210));
+      expect(repository.saves, isEmpty);
+    }
+    await second.up();
+    await tester.pump(const Duration(milliseconds: 999));
+    expect(repository.saves, isEmpty);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(repository.saves, hasLength(1));
+    expect((repository.saves.single['strokes'] as List<dynamic>), hasLength(2));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  });
+
+  testWidgets('keyboard and hover input defer pending autosave', (tester) async {
+    final renders = RenderService(FakePdf());
+    final repository = MemoryRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    final viewport = ViewportController(renders.document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    editor.addStroke(stroke('pending'));
+    await tester.pump(const Duration(milliseconds: 700));
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(repository.saves, isEmpty);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: const Offset(200, 150));
+    await mouse.moveTo(const Offset(210, 160));
+    await tester.pump(const Duration(milliseconds: 999));
+    expect(repository.saves, isEmpty);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(repository.saves, hasLength(1));
+    await mouse.removePointer();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  });
+
   testWidgets('anchored pen settings validate, update ink and preserve independent tool sizes', (tester) async {
     final renders = RenderService(FakePdf());
     final repository = MemoryRepository();
@@ -500,6 +730,7 @@ void main() {
     await draw(point(InkSurface.notes, 60, 100), point(InkSurface.notes, 120, 140));
     expect(editor.strokes(0).last.surface, InkSurface.notes);
     final note = editor.strokes(0).last.toJson();
+    final fittedWidth = editor.document.writingAreas[0]!.width;
     final reference = viewport.pageRect(0).size;
     editor.expandWritingArea(0);
     await tester.pump();
@@ -515,7 +746,7 @@ void main() {
     expect(editor.strokes(0).length, 2);
     editor.undo();
     await tester.pump();
-    expect(viewport.layout.notes[0].width, 612);
+    expect(viewport.layout.notes[0].width, closeTo((fittedWidth + .5) * 612, 1e-8));
     editor.setTool(EditorTool.eraser);
     await draw(point(InkSurface.notes, 60, 100), point(InkSurface.notes, 120, 140));
     expect(editor.strokes(0).single.toJson(), original);

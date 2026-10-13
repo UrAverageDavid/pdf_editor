@@ -15,7 +15,8 @@ class ViewportController extends ChangeNotifier {
     if (mapEquals(_rightWidths, widths)) return;
     _rightWidths = Map.of(widths);
     layout = PageLayout(_sizes, rightWidths: widths);
-    _clamp();
+    // Resizing the canvas under the nib must not recenter the page mid-stroke.
+    if (!inputActive) _clamp();
     notifyListeners();
   }
   Size size = Size.zero;

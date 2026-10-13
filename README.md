@@ -66,7 +66,7 @@ haptics still require a Windows build and Surface hardware validation.
   triangles, and circles/ellipses.
 - Per-page writing space to the right: add, expand, hide/show, autosave, and undo/redo.
 - Grouped erase undo/redo, with a 100-command in-memory history limit.
-- Debounced saves, serialized writes, checksum-verified generations, and recovery from a
+- Autosave after one second without input, serialized writes, checksum-verified generations, and recovery from a
   damaged newest generation. Save failures retain dirty state and show a retry banner.
 - Lazy thumbnails, page count, jump-to-page, and keyboard shortcuts.
 - Desktop annotation JSON backup through the document options menu. This is **not PDF export**.
@@ -76,6 +76,8 @@ haptics still require a Windows build and Surface hardware validation.
 Open a PDF or choose **Try the practice document**. Pen and left mouse drag draw. Touch never
 creates ink: one finger pans and two fingers zoom. Select Hand to pan with a mouse.
 The eraser removes whole strokes; one eraser gesture is one undo step.
+Autosave waits until one second after the last input, including movement during a
+stroke. Manual Save, leaving the document, and backgrounding still save immediately.
 
 The drawing palette shows one colored icon per preset, with Fountain, Highlighter,
 Fine ball, and Brush presets to start. Hover an icon to see its name, type, and size.
@@ -126,10 +128,16 @@ the **Add writing space** popup to add a blank margin to that page. Hover at the
 margin's outer right edge to **Add more space**, or at the page edge to **Show writing
 space** when notes are hidden. The popup stays out of the way during drawing and
 touch navigation. The toolbar's **Add writing space** menu is also available.
-Each addition provides half an original page's
-width. Use **Add more space to the right** to grow it; existing ink keeps its size
-and position. The view pans to reveal the added space. **Fit width** fits the PDF
-and visible writing areas together, or use Hand/touch to pan horizontally.
+Each manual addition provides half an original page's width. While writing in an
+existing margin, it automatically grows or shrinks to fit the rightmost ink with
+**40 screen pixels** of blank space, at any writing zoom. Existing notes and the
+whole active stroke stay inside the margin, even when you write farther left.
+Erasing also trims excess space around the remaining notes. Resizing is limited
+to once per frame without moving the page under the pen, and saves and undoes
+with the stroke or erase gesture. Hovering, touch navigation, and writing on the
+PDF do not resize the margin. Use **Add more space to the right** for manual growth
+and a view that pans to reveal it. **Fit width** fits the PDF and visible writing
+areas together, or use Hand/touch to pan horizontally.
 
 **Hide writing space (keep notes)** collapses the margin without deleting it.
 The toolbar shows **Notes hidden**, and the thumbnail list marks pages with writing

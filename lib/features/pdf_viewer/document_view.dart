@@ -5,6 +5,7 @@ import 'dart:ui' show ViewFocusEvent, ViewFocusState;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../annotations/editor_controller.dart';
 import '../annotations/ink.dart';
@@ -20,10 +21,13 @@ import 'viewport_controller.dart';
 
 class DocumentView extends StatefulWidget {
   const DocumentView({super.key, required this.editor, required this.renders,
-    required this.viewport});
+    required this.viewport, this.writingSpacePadding = 40})
+      : assert(writingSpacePadding > 0);
   final EditorController editor;
   final RenderService renders;
   final ViewportController viewport;
+  /// Minimum blank space to the right of writing, in logical screen pixels.
+  final double writingSpacePadding;
   @override
   State<DocumentView> createState() => DocumentViewState();
 }
@@ -41,6 +45,11 @@ class DocumentViewState extends State<DocumentView>
   final _erased = <String>{};
   int? _pointer;
   int? _page;
+  double? _resizedWritingWidth;
+  final _noteRightEdges = <String, double>{};
+  double _activeNotesRight = 0;
+  double _committedNotesRight = 0;
+  int? _resizeFrame;
   bool _erasing = false;
   Offset? _erasePosition;
   Offset? _previousErase;
@@ -56,14 +65,29 @@ class DocumentViewState extends State<DocumentView>
     super.initState();
     _scroll = ScrollMotion(view, this);
     WidgetsBinding.instance.addObserver(this);
+    GestureBinding.instance.pointerRouter.addGlobalRoute(_inputActivity);
+    HardwareKeyboard.instance.addHandler(_keyActivity);
     _syncWritingAreas();
     view.addListener(_rebuild);
     widget.editor.addListener(_editorChanged);
   }
+  // Observe input across the editor, including toolbar menus and scrollbars.
+  // These hooks only restart the idle timer; they never consume input or repaint.
+  void _inputActivity(PointerEvent event) {
+    if (!event.synthesized && event is! PointerAddedEvent && event is! PointerRemovedEvent) {
+      widget.editor.recordInputActivity();
+    }
+  }
+  bool _keyActivity(KeyEvent event) {
+    widget.editor.recordInputActivity();
+    return false;
+  }
+
   void _editorChanged() { _syncWritingAreas(); if (mounted) setState(() {}); }
   void _syncWritingAreas() => view.setWritingAreas({
     for (final entry in widget.editor.document.writingAreas.entries)
-      if (entry.value.visible) entry.key: entry.value.width,
+      if (entry.value.visible) entry.key: entry.key == _page
+        ? (_resizedWritingWidth ?? entry.value.width) : entry.value.width,
   });
   void _rebuild() {
     if (mounted) setState(() { _edgePage = null; _edgePopup = null; });
@@ -152,6 +176,16 @@ class DocumentViewState extends State<DocumentView>
       _ink.kind = widget.editor.highlighting ? InkKind.highlighter : InkKind.pen;
       _detectShape = widget.editor.detectShapes && _ink.kind == InkKind.pen;
       _filter.reset();
+      _noteRightEdges.clear();
+      _activeNotesRight = 0;
+      if (_ink.surface == InkSurface.notes) {
+        for (final stroke in widget.editor.strokes(page)) {
+          if (stroke.surface == InkSurface.notes) {
+            _noteRightEdges[stroke.id] = _rightEdge(stroke.points, stroke.width, view.layout.pages[page].width);
+          }
+        }
+      }
+      _committedNotesRight = _noteRightEdges.values.fold<double>(0, math.max);
       _penInking = _isPen(e) && !_erasing;
       if (_penInking) unawaited(_haptics.start());
       _sample(e);
@@ -184,12 +218,40 @@ class DocumentViewState extends State<DocumentView>
     }
   }
 
+  double _rightEdge(List<InkPoint> points, double width, double pageWidth) =>
+    points.fold<double>(0, (right, point) => math.max(right, point.x * pageWidth)) + width * .85;
+
+  double get _existingNotesRight => !_erasing ? _committedNotesRight : _noteRightEdges.entries
+    .where((entry) => !_erased.contains(entry.key))
+    .fold<double>(0, (right, entry) => math.max(right, entry.value));
+
+  void _fitWritingSpace(double activeRight, {bool immediate = false}) {
+    final width = (math.max(_existingNotesRight, activeRight) +
+      widget.writingSpacePadding / view.scale) / view.layout.pages[_page!].width;
+    if (_resizedWritingWidth == width) return;
+    _resizedWritingWidth = width;
+    if (immediate) { _syncWritingAreas(); return; }
+    // Pointer samples can arrive faster than frames. Resize the layout at most once per frame.
+    _resizeFrame ??= SchedulerBinding.instance.scheduleFrameCallback((_) {
+      _resizeFrame = null;
+      if (mounted && _pointer != null && _resizedWritingWidth != null) _syncWritingAreas();
+    });
+  }
+
   void _sample(PointerEvent e) {
     final page = _page!;
-    final rect = _ink.surface == InkSurface.page ? view.layout.pages[page] : view.layout.notes[page];
+    var rect = _ink.surface == InkSurface.page ? view.layout.pages[page] : view.layout.notes[page];
     final reference = view.layout.pages[page].size;
     final local = view.toDocument(e.localPosition) - rect.topLeft;
-    // End at the page boundary; never bridge unrelated pages with a stroke.
+    if (_ink.surface == InkSurface.notes && !_erasing &&
+        local.dx >= 0 && local.dy >= 0 && local.dy < rect.height) {
+      _activeNotesRight = math.max(_activeNotesRight, local.dx + _ink.width * .85);
+      _fitWritingSpace(_activeNotesRight);
+      // Accept samples past the old edge before the next frame applies the resize.
+      rect = Rect.fromLTWH(rect.left, rect.top,
+        _resizedWritingWidth! * reference.width, rect.height);
+    }
+    // End at the top, bottom or left boundary; never bridge unrelated pages.
     if (!(Offset.zero & rect.size).contains(local)) { finishInput(); return; }
     if (_erasing) {
       final from = _previousErase ?? local;
@@ -220,7 +282,10 @@ class DocumentViewState extends State<DocumentView>
     _penInking = false;
     if (_pointer == null) { _touches.clear(); return; }
     if (_erasing) {
-      widget.editor.erase(_erased, _page!);
+      if (_ink.surface == InkSurface.notes && _erased.isNotEmpty) {
+        _fitWritingSpace(0, immediate: true);
+      }
+      widget.editor.erase(_erased, _page!, writingAreaWidth: _resizedWritingWidth);
     } else if (_ink.points.isNotEmpty) {
       final endpoint = _filter.endpoint;
       final last = _ink.points.last;
@@ -235,14 +300,22 @@ class DocumentViewState extends State<DocumentView>
         view.layout.notes[_page!].width / view.layout.pages[_page!].width;
       if (detected != null && detected.points.any((p) =>
           p.x < 0 || p.x > maxX || p.y < 0 || p.y > 1)) detected = null;
+      if (_ink.surface == InkSurface.notes) {
+        _fitWritingSpace(_rightEdge(detected?.points ?? _ink.points,
+          _ink.width, view.layout.pages[_page!].width), immediate: true);
+      }
       widget.editor.addStroke(InkStroke(
         id: '${now.microsecondsSinceEpoch}-${_strokeSequence++}', pageIndex: _page!,
         points: detected?.points ?? _ink.points, width: _ink.width, color: _ink.color, createdAt: now,
         kind: _ink.kind, penStyle: _ink.penStyle, shape: detected?.shape ?? InkShape.freehand,
-        surface: _ink.surface));
+        surface: _ink.surface), writingAreaWidth: _resizedWritingWidth);
     }
     _pointer = null;
     _page = null;
+    _resizedWritingWidth = null;
+    if (_resizeFrame != null) SchedulerBinding.instance.cancelFrameCallbackWithId(_resizeFrame!);
+    _resizeFrame = null;
+    _noteRightEdges.clear();
     _previousErase = null;
     _erased.clear();
     _ink.clear();
@@ -306,6 +379,9 @@ class DocumentViewState extends State<DocumentView>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(_inputActivity);
+    HardwareKeyboard.instance.removeHandler(_keyActivity);
+    if (_resizeFrame != null) SchedulerBinding.instance.cancelFrameCallbackWithId(_resizeFrame!);
     _scroll.dispose();
     if (_penInking) unawaited(_haptics.stop());
     view.inputActive = false;
