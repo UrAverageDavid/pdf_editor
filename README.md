@@ -82,14 +82,18 @@ and a stroke-width preview; switching back to Pen restores its color and width.
 Highlight opacity stays uniform within a stroke, even when retraced. Separate
 overlapping highlights build up color. Highlights save, erase, and undo like pen ink.
 
-The drawing palette groups tools, three quick stroke-width previews, the current
-size, and color swatches. Tap the size (such as **2.2 pt**) to open the tip picker:
-choose a preset, drag the slider, or type an exact size and press **Apply**.
-Pen tips range from **0.10–8 pt**, including 0.25, 0.35, 0.5, and 0.7 pt fine tips;
-the pen slider adjusts in 0.05 pt steps. Highlighter widths range from **6–40 pt**.
-The preview updates before applying; Cancel keeps the previous size. On narrow
-windows, swipe or scroll the palette sideways to reach every control. Document
-and writing-space controls sit in the blue top bar; undo/redo stay beside the palette.
+The drawing palette includes Fountain, Fine ball, and Brush pen presets. Tap a preset
+to select it; tap the selected preset again to open a compact settings popover underneath.
+Use **+** to copy the current pen into a new preset. Name it and choose Fountain, Ball,
+or Brush, an exact tip size, pressure sensitivity, and tip sharpness. The stroke preview
+updates live and valid edits save automatically with the document, including each
+preset's color. Editing or deleting a preset leaves existing strokes unchanged.
+
+Pen tips range from **0.10–8 pt**, with a slider in 0.05 pt steps. Highlighter widths
+range from **6–40 pt** and have their own anchored width picker. Close a popover with
+its close button (pen settings), Escape, or a tap outside. On narrow windows, swipe or
+scroll the palette sideways to reach every control; settings scroll on shorter screens.
+Document and writing-space controls sit in the blue top bar; undo/redo stay beside the palette.
 
 Enable **Detect shapes (S)** to tidy pen strokes on lift. It starts off so normal
 handwriting stays freehand. Draw a line, rectangle/square (including rotated ones),

@@ -147,6 +147,7 @@ class DocumentViewState extends State<DocumentView>
       _ink.page = page;
       _ink.surface = onPage ? InkSurface.page : InkSurface.notes;
       _ink.width = widget.editor.activeWidth;
+      _ink.penStyle = widget.editor.penStyle;
       _ink.color = widget.editor.activeColor;
       _ink.kind = widget.editor.highlighting ? InkKind.highlighter : InkKind.pen;
       _detectShape = widget.editor.detectShapes && _ink.kind == InkKind.pen;
@@ -237,7 +238,7 @@ class DocumentViewState extends State<DocumentView>
       widget.editor.addStroke(InkStroke(
         id: '${now.microsecondsSinceEpoch}-${_strokeSequence++}', pageIndex: _page!,
         points: detected?.points ?? _ink.points, width: _ink.width, color: _ink.color, createdAt: now,
-        kind: _ink.kind, shape: detected?.shape ?? InkShape.freehand,
+        kind: _ink.kind, penStyle: _ink.penStyle, shape: detected?.shape ?? InkShape.freehand,
         surface: _ink.surface));
     }
     _pointer = null;

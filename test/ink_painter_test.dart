@@ -4,8 +4,40 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:papertrail/features/annotations/ink.dart';
 import 'package:papertrail/features/annotations/ink_painter.dart';
+import 'package:papertrail/features/annotations/pen_preset.dart';
+
+Future<int> inkCoverage(PenStyle style, double pressure) async {
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  StrokeSmoother.paint(canvas, const Size(100, 100), List.generate(21,
+    (i) => InkPoint(.1 + .04 * i, .5, pressure, i)), 12, Colors.black, penStyle: style);
+  final picture = recorder.endRecording();
+  final image = picture.toImageSync(100, 100);
+  final bytes = (await image.toByteData())!;
+  var coverage = 0;
+  for (var i = 3; i < bytes.lengthInBytes; i += 4) { coverage += bytes.getUint8(i); }
+  image.dispose();
+  picture.dispose();
+  return coverage;
+}
 
 void main() {
+  test('pen styles and sharpness change painted ink; zero sensitivity ignores pressure', () async {
+    for (final type in PenType.values) {
+      final insensitive = PenStyle(type: type, pressureSensitivity: 0, tipSharpness: 0);
+      expect(await inkCoverage(insensitive, .2), await inkCoverage(insensitive, .9));
+      final sensitive = PenStyle(type: type, pressureSensitivity: 1, tipSharpness: 0);
+      expect(await inkCoverage(sensitive, .2), lessThan(await inkCoverage(sensitive, .9)));
+      final sharp = PenStyle(type: type, pressureSensitivity: 0, tipSharpness: 1);
+      expect(await inkCoverage(sharp, .75), lessThan(await inkCoverage(insensitive, .75)));
+    }
+    final coverage = <int>{};
+    for (final type in PenType.values) {
+      coverage.add(await inkCoverage(PenStyle(type: type), .3));
+    }
+    expect(coverage, hasLength(3));
+  });
+
   test('highlighter remains translucent and uniform through retracing', () async {
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder)..drawColor(Colors.white, BlendMode.src);

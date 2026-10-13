@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../document/app_document.dart';
 import 'ink.dart';
+import 'pen_preset.dart';
 
 enum SaveState { saved, pending, saving, failed }
 
@@ -35,8 +36,44 @@ class EditorController extends ChangeNotifier {
   SaveState saveState = SaveState.saved;
   Object? saveError;
   EditorTool tool = EditorTool.pen;
-  int color = 0xff2947c7;
-  double width = 2.2;
+  List<PenPreset> get penPresets => List.unmodifiable(document.penPresets);
+  PenPreset get selectedPen => document.penPresets.firstWhere((p) => p.id == document.selectedPenId);
+  int get color => selectedPen.color;
+  double get width => selectedPen.width;
+  PenStyle get penStyle => selectedPen.style;
+
+  void selectPen(String id) {
+    if (!document.penPresets.any((p) => p.id == id)) return;
+    tool = EditorTool.pen;
+    if (document.selectedPenId == id) { notifyListeners(); return; }
+    document.selectedPenId = id;
+    _changed();
+  }
+
+  void updatePen(PenPreset preset) {
+    final index = document.penPresets.indexWhere((p) => p.id == preset.id);
+    if (index < 0) return;
+    document.penPresets[index] = preset;
+    _changed();
+  }
+
+  void createPen() {
+    final source = selectedPen;
+    final preset = PenPreset(id: 'pen-${DateTime.now().microsecondsSinceEpoch}',
+      name: 'Pen ${penPresets.length + 1}', width: source.width,
+      color: source.color, style: source.style);
+    document.penPresets.add(preset);
+    document.selectedPenId = preset.id;
+    tool = EditorTool.pen;
+    _changed();
+  }
+
+  void deletePen(String id) {
+    if (document.penPresets.length <= 1) return;
+    document.penPresets.removeWhere((p) => p.id == id);
+    if (document.selectedPenId == id) document.selectedPenId = document.penPresets.first.id;
+    _changed();
+  }
   int highlighterColor = 0xffffd740;
   double highlighterWidth = 16;
   bool detectShapes = false;
@@ -54,11 +91,11 @@ class EditorController extends ChangeNotifier {
   void setTool(EditorTool value) { tool = value; notifyListeners(); }
   void setColor(int value) {
     if (highlighting) { highlighterColor = value; }
-    else { color = value; tool = EditorTool.pen; }
+    else { tool = EditorTool.pen; updatePen(selectedPen.copyWith(color: value)); return; }
     notifyListeners();
   }
   void setWidth(double value) {
-    if (highlighting) { highlighterWidth = value; } else { width = value; }
+    if (highlighting) { highlighterWidth = value; } else { updatePen(selectedPen.copyWith(width: value)); return; }
     notifyListeners();
   }
   void toggleShapeDetection() { detectShapes = !detectShapes; notifyListeners(); }

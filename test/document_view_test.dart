@@ -40,37 +40,36 @@ class FakePdf implements PdfDocumentHandle {
 }
 
 void main() {
-  testWidgets('fine tip picker validates, previews, applies and preserves independent tool sizes', (tester) async {
+  testWidgets('anchored pen settings validate, update ink and preserve independent tool sizes', (tester) async {
     final renders = RenderService(FakePdf());
     final repository = MemoryRepository();
     final editor = EditorController(sampleDocument(), repository);
     await tester.pumpWidget(MaterialApp(home: Scaffold(body: EditorScreen(
       editor: editor, renders: renders, onOpen: () {}, onBack: () {}))));
     await tester.pumpAndSettle();
-    final picker = find.byKey(const ValueKey('width-picker'));
+    final picker = find.byKey(const ValueKey('pen-preset-fountain'));
     Future<void> openPicker() async {
       await tester.ensureVisible(picker);
       await tester.tap(picker);
       await tester.pumpAndSettle();
     }
     await openPicker();
-    await tester.tap(find.widgetWithText(ChoiceChip, '0.25'));
-    await tester.pump();
-    expect(editor.width, 2.2); // Preview doesn't change the selected tip until Apply.
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
-    expect(editor.width, 2.2);
-    await openPicker();
+    expect(find.byType(AlertDialog), findsNothing);
+    final popup = tester.getRect(find.byKey(const ValueKey('pen-settings-popover')));
+    expect(popup.width, lessThanOrEqualTo(304));
+    expect(popup.top, greaterThanOrEqualTo(tester.getRect(picker).bottom));
     final input = find.byKey(const ValueKey('tip-size-input'));
     await tester.enterText(input, '0');
     await tester.pump();
-    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Apply')).onPressed, isNull);
+    expect(find.text('Enter 0.1–8 pt'), findsOneWidget);
+    expect(editor.width, 2.2);
     await tester.enterText(input, 'NaN');
     await tester.pump();
-    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Apply')).onPressed, isNull);
+    expect(find.text('Enter 0.1–8 pt'), findsOneWidget);
+    expect(editor.width, 2.2);
     await tester.enterText(input, '0.25');
     await tester.pump();
-    await tester.tap(find.text('Apply'));
+    await tester.tap(find.byTooltip('Close pen settings'));
     await tester.pumpAndSettle();
     expect(editor.width, .25);
     expect(find.text('0.25 pt'), findsOneWidget);
@@ -79,16 +78,20 @@ void main() {
     await pen.up();
     await tester.pump();
     expect(editor.strokes(0).single.width, .25);
+    expect(editor.strokes(0).single.penStyle!.toJson(), editor.penStyle.toJson());
     await editor.flush();
     expect(AppDocument.fromJson(repository.saves.last, '/source.pdf').annotations[0]!.single.width, .25);
     await tester.ensureVisible(find.byTooltip('Highlighter (M)'));
     await tester.tap(find.byTooltip('Highlighter (M)'));
     await tester.pumpAndSettle();
-    await openPicker();
+    final highlighterPicker = find.byKey(const ValueKey('width-picker'));
+    await tester.ensureVisible(highlighterPicker);
+    await tester.tap(highlighterPicker);
+    await tester.pumpAndSettle();
     expect(find.text('Highlighter width'), findsWidgets);
     await tester.enterText(input, '24');
     await tester.pump();
-    await tester.tap(find.text('Apply'));
+    await tester.tapAt(const Offset(10, 580));
     await tester.pumpAndSettle();
     expect(editor.highlighterWidth, 24);
     await tester.ensureVisible(find.byTooltip('Pen (P)'));
@@ -113,7 +116,7 @@ void main() {
         editor: editor, renders: renders, onOpen: () {}, onBack: () {}))));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      final fineTip = find.byTooltip('0.35 pt pen');
+      final fineTip = find.byKey(const ValueKey('pen-preset-ball'));
       await tester.ensureVisible(fineTip);
       await tester.tap(fineTip);
       await tester.pumpAndSettle();
@@ -123,12 +126,16 @@ void main() {
       await tester.tap(color);
       await tester.pumpAndSettle();
       expect(editor.color, 0xff39755b);
-      final picker = find.byKey(const ValueKey('width-picker'));
+      final picker = find.byKey(const ValueKey('pen-preset-ball'));
       await tester.ensureVisible(picker);
       await tester.tap(picker);
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      await tester.tap(find.text('Cancel'));
+      expect(find.byType(AlertDialog), findsNothing);
+      final popup = tester.getRect(find.byKey(const ValueKey('pen-settings-popover')));
+      expect(popup.left, greaterThanOrEqualTo(0));
+      expect(popup.right, lessThanOrEqualTo(width));
+      await tester.tap(find.byTooltip('Close pen settings'));
       await tester.pumpAndSettle();
       await tester.pumpWidget(const SizedBox.shrink());
       await renders.close();

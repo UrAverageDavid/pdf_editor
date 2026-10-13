@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'pen_preset.dart';
+
 enum EditorTool { pen, highlighter, eraser, hand }
 enum InkSurface { page, notes }
 enum InkKind { pen, highlighter }
@@ -34,7 +36,7 @@ class InkStroke {
   InkStroke({required this.id, required this.pageIndex, required List<InkPoint> points,
     required this.width, required this.color, required this.createdAt,
     this.surface = InkSurface.page, this.kind = InkKind.pen,
-    this.shape = InkShape.freehand})
+    this.shape = InkShape.freehand, this.penStyle})
       : points = List.unmodifiable(points);
 
   final String id;
@@ -43,6 +45,7 @@ class InkStroke {
   final InkSurface surface;
   final InkKind kind;
   final InkShape shape;
+  final PenStyle? penStyle;
   final List<InkPoint> points;
   /// Width in PDF display points, independent of viewport size or zoom.
   final double width;
@@ -52,6 +55,7 @@ class InkStroke {
   Map<String, dynamic> toJson() => {
     'id': id, 'page': pageIndex, 'surface': surface.name,
     'kind': kind.name, 'shape': shape.name,
+    if (penStyle != null) 'penStyle': penStyle!.toJson(),
     'points': points.map((p) => p.toJson()).toList(),
     'width': width, 'color': color, 'createdAt': createdAt.toIso8601String(),
   };
@@ -76,6 +80,7 @@ class InkStroke {
     }
     return InkStroke(id: value['id'] as String, pageIndex: value['page'] as int, surface: surface,
       points: points, width: width, color: value['color'] as int,
+      penStyle: value['penStyle'] == null ? null : PenStyle.fromJson(value['penStyle'] as Map<String, dynamic>),
       kind: decode(InkKind.values, 'kind', InkKind.pen),
       shape: decode(InkShape.values, 'shape', InkShape.freehand),
       createdAt: DateTime.parse(value['createdAt'] as String));

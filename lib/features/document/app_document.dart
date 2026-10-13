@@ -1,4 +1,5 @@
 import '../annotations/ink.dart';
+import '../annotations/pen_preset.dart';
 
 class WritingArea {
   const WritingArea({this.width = .5, this.visible = true});
@@ -16,8 +17,10 @@ class WritingArea {
 class AppDocument {
   AppDocument({required this.id, required this.displayName, required this.sourcePath,
     required this.originalPath, required this.pageCount, required this.modifiedAt,
-    Map<int, List<InkStroke>>? annotations, Map<int, WritingArea>? writingAreas})
-      : annotations = annotations ?? {}, writingAreas = writingAreas ?? {};
+    Map<int, List<InkStroke>>? annotations, Map<int, WritingArea>? writingAreas,
+    List<PenPreset>? penPresets, this.selectedPenId = 'fountain'})
+      : annotations = annotations ?? {}, writingAreas = writingAreas ?? {},
+        penPresets = List.of(penPresets ?? PenPreset.defaults);
 
   final String id; // Full SHA-256 of the immutable imported PDF.
   final String displayName;
@@ -27,9 +30,13 @@ class AppDocument {
   DateTime modifiedAt;
   final Map<int, List<InkStroke>> annotations;
   final Map<int, WritingArea> writingAreas;
+  final List<PenPreset> penPresets;
+  String selectedPenId;
   int get strokeCount => annotations.values.fold(0, (n, strokes) => n + strokes.length);
 
   Map<String, dynamic> toJson() => {
+    'penPresets': penPresets.map((preset) => preset.toJson()).toList(),
+    'selectedPenId': selectedPenId,
     'schema': 2, 'id': id, 'displayName': displayName, 'originalPath': originalPath,
     'pageCount': pageCount, 'modifiedAt': modifiedAt.toIso8601String(),
     'strokes': annotations.values.expand((s) => s).map((s) => s.toJson()).toList(),
@@ -50,6 +57,15 @@ class AppDocument {
         areas[page] = WritingArea.fromJson(entry.value as Map<String, dynamic>);
       }
     }
+    final presets = (json['penPresets'] as List<dynamic>?)?.map((item) =>
+      PenPreset.fromJson(item as Map<String, dynamic>)).toList();
+    if (presets != null && (presets.isEmpty || presets.map((p) => p.id).toSet().length != presets.length)) {
+      throw const FormatException('Invalid pen presets');
+    }
+    final selected = json['selectedPenId'] as String? ?? (presets ?? PenPreset.defaults).first.id;
+    if (!(presets ?? PenPreset.defaults).any((p) => p.id == selected)) {
+      throw const FormatException('Invalid selected pen');
+    }
     final annotations = <int, List<InkStroke>>{};
     final ids = <String>{};
     for (final item in json['strokes'] as List<dynamic>) {
@@ -68,7 +84,7 @@ class AppDocument {
     return AppDocument(id: json['id'] as String, displayName: json['displayName'] as String,
       sourcePath: sourcePath, originalPath: json['originalPath'] as String,
       pageCount: count, modifiedAt: DateTime.parse(json['modifiedAt'] as String),
-      annotations: annotations, writingAreas: areas);
+      annotations: annotations, writingAreas: areas, penPresets: presets, selectedPenId: selected);
   }
 }
 

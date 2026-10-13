@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../features/annotations/editor_controller.dart';
 import '../features/annotations/ink.dart';
+import 'pen_presets.dart';
 
 const _toolInk = Color(0xff253447);
 const _selection = Color(0xffd9f0f3);
@@ -32,14 +33,6 @@ class AnnotationToolbar extends StatelessWidget {
   Widget _divider() => const Padding(padding: EdgeInsets.symmetric(horizontal: 5),
     child: SizedBox(height: 24, child: VerticalDivider(width: 1, color: Color(0xffdce1e6))));
 
-  Future<void> _chooseWidth(BuildContext context) async {
-    finishInput();
-    final width = await showDialog<double>(context: context, builder: (_) => _WidthPicker(
-      initialWidth: editor.activeWidth, highlighting: editor.highlighting,
-      color: Color(editor.activeColor)));
-    if (width != null && context.mounted) _change(() => editor.setWidth(width));
-  }
-
   @override
   Widget build(BuildContext context) => Container(
     height: 68, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -64,20 +57,26 @@ class AnnotationToolbar extends StatelessWidget {
                 'Detect shapes (S): lines, arrows, rectangles, triangles and ellipses with the pen',
                 editor.toggleShapeDetection, editor.detectShapes),
               _divider(),
-              for (final width in editor.highlighting ? [10.0, 16.0, 24.0] : [.35, 1.2, 2.2])
-                _WidthButton(width: width, highlighting: editor.highlighting,
-                  selected: (editor.activeWidth - width).abs() < .001,
-                  onPressed: () => _change(() => editor.setWidth(width))),
-              Tooltip(message: editor.highlighting ? 'Highlighter width' : 'Pen tip size',
-                child: TextButton(key: const ValueKey('width-picker'),
-                  style: TextButton.styleFrom(foregroundColor: _toolInk,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    minimumSize: const Size(76, 44), padding: const EdgeInsets.symmetric(horizontal: 8)),
-                  onPressed: () => _chooseWidth(context),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Text('${_widthLabel(editor.activeWidth)} pt', style: const TextStyle(fontSize: 12)),
-                    const Icon(Icons.expand_more, size: 16),
-                  ]))),
+              if (!editor.highlighting)
+                PenPresets(editor: editor, finishInput: finishInput)
+              else ...[
+                for (final width in [10.0, 16.0, 24.0])
+                  _WidthButton(width: width, highlighting: true,
+                    selected: (editor.activeWidth - width).abs() < .001,
+                    onPressed: () => _change(() => editor.setWidth(width))),
+                MenuAnchor(style: penMenuStyle, alignmentOffset: const Offset(0, 8),
+                  consumeOutsideTap: true,
+                  menuChildren: [_WidthPicker(initialWidth: editor.activeWidth,
+                    highlighting: true, color: Color(editor.activeColor),
+                    onChanged: (width) => _change(() => editor.setWidth(width)))],
+                  builder: (context, controller, child) => TextButton(
+                    key: const ValueKey('width-picker'),
+                    onPressed: () { finishInput(); controller.isOpen ? controller.close() : controller.open(); },
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Text('${_widthLabel(editor.activeWidth)} pt', style: const TextStyle(fontSize: 12)),
+                      const Icon(Icons.expand_more, size: 16),
+                    ]))),
+              ],
               _divider(),
               for (final color in editor.highlighting
                 ? [0xffffd740, 0xff69f0ae, 0xff40c4ff, 0xffff80ab]
@@ -121,10 +120,11 @@ class _WidthButton extends StatelessWidget {
 }
 
 class _WidthPicker extends StatefulWidget {
-  const _WidthPicker({required this.initialWidth, required this.highlighting, required this.color});
+  const _WidthPicker({required this.initialWidth, required this.highlighting, required this.color, required this.onChanged});
   final double initialWidth;
   final bool highlighting;
   final Color color;
+  final ValueChanged<double> onChanged;
   @override
   State<_WidthPicker> createState() => _WidthPickerState();
 }
@@ -140,6 +140,7 @@ class _WidthPickerState extends State<_WidthPicker> {
     _width = double.parse(value.toStringAsFixed(2));
     _input.text = _widthLabel(_width);
     _error = null;
+    widget.onChanged(_width);
   });
 
   void _type(String text) {
@@ -147,7 +148,10 @@ class _WidthPickerState extends State<_WidthPicker> {
     setState(() {
       _error = value == null || !value.isFinite || value < _min || value > _max
         ? 'Enter a size from ${_widthLabel(_min)} to ${_widthLabel(_max)} pt' : null;
-      if (_error == null) _width = double.parse(value!.toStringAsFixed(2));
+      if (_error == null) {
+        _width = double.parse(value!.toStringAsFixed(2));
+        widget.onChanged(_width);
+      }
     });
   }
 
@@ -155,10 +159,12 @@ class _WidthPickerState extends State<_WidthPicker> {
   void dispose() { _input.dispose(); super.dispose(); }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text(widget.highlighting ? 'Highlighter width' : 'Pen tip size'),
-    content: SizedBox(width: 336, child: SingleChildScrollView(child: Column(
+  Widget build(BuildContext context) => SizedBox(width: 304,
+    child: ConstrainedBox(constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height - 100),
+    child: SingleChildScrollView(primary: false, padding: const EdgeInsets.all(18), child: Column(
       mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Highlighter width', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 12),
         Container(height: 64, alignment: Alignment.center,
           decoration: BoxDecoration(color: const Color(0xfff5f6f8), borderRadius: BorderRadius.circular(12)),
           child: Container(width: 230, height: _width,
@@ -169,7 +175,7 @@ class _WidthPickerState extends State<_WidthPicker> {
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
           decoration: InputDecoration(labelText: 'Size', suffixText: 'pt', errorText: _error,
             border: const OutlineInputBorder()),
-          onChanged: _type, onSubmitted: (_) { if (_error == null) Navigator.pop(context, _width); }),
+          onChanged: _type),
         Slider(semanticFormatterCallback: (value) => '${_widthLabel(value)} points',
           value: _width.clamp(_min, _max), min: _min, max: _max,
           divisions: widget.highlighting ? 34 : 158, onChanged: _select),
@@ -184,8 +190,5 @@ class _WidthPickerState extends State<_WidthPicker> {
         ]),
         const SizedBox(height: 12),
         const Text('Sizes are in PDF points and scale with page zoom.', style: TextStyle(fontSize: 12, color: Color(0xff667383))),
-      ]))),
-    actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-      FilledButton(onPressed: _error == null ? () => Navigator.pop(context, _width) : null,
-        child: const Text('Apply'))]);
+      ]))));
 }
