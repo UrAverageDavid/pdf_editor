@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../features/annotations/editor_controller.dart';
 import '../features/annotations/ink.dart';
 import '../features/annotations/ink_painter.dart';
+import '../features/document/app_document.dart';
 import '../features/pdf_viewer/document_view.dart';
 import '../features/pdf_viewer/page_image.dart';
 import '../features/pdf_viewer/render_service.dart';
@@ -112,6 +113,15 @@ class EditorScreenState extends State<EditorScreen> {
             onOpened: finishInput,
             onSelected: (action) {
               finishInput();
+              if (action.startsWith('paper:') || action.startsWith('spacing:')) {
+                if (action.startsWith('paper:')) {
+                  editor.setWritingPaper(page, pattern: WritingPattern.values.byName(action.substring(6)));
+                } else {
+                  editor.setWritingPaper(page, spacing: WritingSpacing.values.byName(action.substring(8)));
+                }
+                if (area == null || !area.visible) _viewport.revealWritingArea(page);
+                return;
+              }
               if (action == 'expand') { editor.expandWritingArea(page); }
               else { editor.toggleWritingArea(page); }
               if (editor.document.writingAreas[page]?.visible ?? false) {
@@ -122,6 +132,19 @@ class EditorScreenState extends State<EditorScreen> {
               PopupMenuItem(value: 'toggle', child: Text(area == null ? 'Add writing space to the right' :
                 area.visible ? 'Hide writing space (keep notes)' : 'Show writing space')),
               if (area != null) const PopupMenuItem(value: 'expand', child: Text('Add more space to the right')),
+              const PopupMenuDivider(),
+              const PopupMenuItem(enabled: false, height: 28, child: Text('Paper pattern')),
+              for (final pattern in WritingPattern.values)
+                CheckedPopupMenuItem(value: 'paper:${pattern.name}', height: 40,
+                  checked: (area?.pattern ?? WritingPattern.blank) == pattern,
+                  child: Text(pattern.label)),
+              if (area != null && area.pattern != WritingPattern.blank) ...[
+                const PopupMenuDivider(),
+                const PopupMenuItem(enabled: false, height: 28, child: Text('Line / grid spacing')),
+                for (final spacing in WritingSpacing.values)
+                  CheckedPopupMenuItem(value: 'spacing:${spacing.name}', height: 40,
+                    checked: area.spacing == spacing, child: Text(spacing.label)),
+              ],
             ],
             child: SizedBox(height: 44, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10),
               child: Row(mainAxisSize: MainAxisSize.min, children: [

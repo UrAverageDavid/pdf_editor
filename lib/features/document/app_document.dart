@@ -1,16 +1,51 @@
 import '../annotations/ink.dart';
 import '../annotations/pen_preset.dart';
 
+enum WritingPattern { blank, ruled, grid }
+enum WritingSpacing { small, medium, large }
+
+extension WritingPatternLabel on WritingPattern {
+  String get label => switch (this) {
+    WritingPattern.blank => 'Blank', WritingPattern.ruled => 'Ruled lines', WritingPattern.grid => 'Grid',
+  };
+}
+extension WritingSpacingLabel on WritingSpacing {
+  double get points => switch (this) {
+    WritingSpacing.small => 12, WritingSpacing.medium => 20, WritingSpacing.large => 32,
+  };
+  String get label => switch (this) {
+    WritingSpacing.small => 'Small (12 pt)', WritingSpacing.medium => 'Medium (20 pt)',
+    WritingSpacing.large => 'Large (32 pt)',
+  };
+}
+
 class WritingArea {
-  const WritingArea({this.width = .5, this.visible = true});
+  /// Keep an empty margin as wide as the initial writing space.
+  static const minimumWidth = .5;
+  const WritingArea({double width = minimumWidth, this.visible = true,
+    this.pattern = WritingPattern.blank, this.spacing = WritingSpacing.medium})
+      : width = width < minimumWidth ? minimumWidth : width;
   /// Width in multiples of the original PDF page width.
   final double width;
   final bool visible;
-  Map<String, dynamic> toJson() => {'width': width, 'visible': visible};
+  final WritingPattern pattern;
+  final WritingSpacing spacing;
+  WritingArea copyWith({double? width, bool? visible, WritingPattern? pattern, WritingSpacing? spacing}) =>
+    WritingArea(width: width ?? this.width, visible: visible ?? this.visible,
+      pattern: pattern ?? this.pattern, spacing: spacing ?? this.spacing);
+  Map<String, dynamic> toJson() => {'width': width, 'visible': visible,
+    'pattern': pattern.name, 'spacing': spacing.name};
   factory WritingArea.fromJson(Map<String, dynamic> json) {
     final width = (json['width'] as num).toDouble();
     if (!width.isFinite || width <= 0) throw const FormatException('Invalid writing area width');
-    return WritingArea(width: width, visible: json['visible'] as bool);
+    T decode<T extends Enum>(List<T> values, String key, T fallback) {
+      if (json[key] == null) return fallback;
+      return values.where((value) => value.name == json[key]).firstOrNull ??
+        (throw FormatException('Invalid writing area $key'));
+    }
+    return WritingArea(width: width, visible: json['visible'] as bool,
+      pattern: decode(WritingPattern.values, 'pattern', WritingPattern.blank),
+      spacing: decode(WritingSpacing.values, 'spacing', WritingSpacing.medium));
   }
 }
 

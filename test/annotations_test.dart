@@ -95,6 +95,50 @@ void main() {
     editor.dispose();
   });
 
+  test('paper pattern and spacing survive resizing, visibility, undo and reopening', () async {
+    final repository = MemoryRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    editor.setWritingPaper(0, pattern: WritingPattern.grid, spacing: WritingSpacing.small);
+    editor.expandWritingArea(0);
+    editor.toggleWritingArea(0);
+    expect(editor.document.writingAreas[0]!.pattern, WritingPattern.grid);
+    expect(editor.document.writingAreas[0]!.spacing, WritingSpacing.small);
+    expect(editor.document.writingAreas[0]!.visible, isFalse);
+    editor.toggleWritingArea(0);
+    editor.setWritingPaper(0, pattern: WritingPattern.ruled, spacing: WritingSpacing.large);
+    editor.undo();
+    expect(editor.document.writingAreas[0]!.pattern, WritingPattern.grid);
+    editor.redo();
+    expect(editor.document.writingAreas[0]!.pattern, WritingPattern.ruled);
+    await editor.flush();
+    final loaded = AppDocument.fromJson(repository.saves.last, '');
+    expect(loaded.writingAreas[0]!.pattern, WritingPattern.ruled);
+    expect(loaded.writingAreas[0]!.spacing, WritingSpacing.large);
+    expect(loaded.writingAreas[0]!.width, 1);
+    expect(loaded.writingAreas[1], isNull);
+    final legacy = WritingArea.fromJson({'width': .5, 'visible': true});
+    expect(legacy.pattern, WritingPattern.blank);
+    expect(legacy.spacing, WritingSpacing.medium);
+    for (final key in ['pattern', 'spacing']) {
+      expect(() => WritingArea.fromJson({...legacy.toJson(), key: 'invalid'}), throwsFormatException);
+    }
+    editor.dispose();
+  });
+
+  test('older narrow writing areas reopen at the minimum without changing visibility', () {
+    final json = sampleDocument().toJson();
+    json['writingAreas'] = {
+      '0': {'width': .1, 'visible': true},
+      '1': {'width': .2, 'visible': false},
+      '2': {'width': 1.5, 'visible': true},
+    };
+    final loaded = AppDocument.fromJson(json, '');
+    expect(loaded.writingAreas[0]!.width, WritingArea.minimumWidth);
+    expect(loaded.writingAreas[1]!.width, WritingArea.minimumWidth);
+    expect(loaded.writingAreas[1]!.visible, isFalse);
+    expect(loaded.writingAreas[2]!.width, 1.5);
+  });
+
   test('invalid writing areas and orphaned note ink are rejected', () {
     for (final width in [-1, 0, double.infinity]) {
       final json = sampleDocument().toJson();

@@ -13,11 +13,13 @@ import '../annotations/ink_filter.dart';
 import '../annotations/ink_painter.dart';
 import '../annotations/pen_haptics.dart';
 import '../annotations/shape_detector.dart';
+import '../document/app_document.dart';
 import 'document_scrollbar.dart';
 import 'page_image.dart';
 import 'render_service.dart';
 import 'scroll_motion.dart';
 import 'viewport_controller.dart';
+import 'writing_paper_painter.dart';
 
 class DocumentView extends StatefulWidget {
   const DocumentView({super.key, required this.editor, required this.renders,
@@ -226,8 +228,9 @@ class DocumentViewState extends State<DocumentView>
     .fold<double>(0, (right, entry) => math.max(right, entry.value));
 
   void _fitWritingSpace(double activeRight, {bool immediate = false}) {
-    final width = (math.max(_existingNotesRight, activeRight) +
-      widget.writingSpacePadding / view.scale) / view.layout.pages[_page!].width;
+    final width = math.max(WritingArea.minimumWidth,
+      (math.max(_existingNotesRight, activeRight) + widget.writingSpacePadding / view.scale) /
+        view.layout.pages[_page!].width);
     if (_resizedWritingWidth == width) return;
     _resizedWritingWidth = width;
     if (immediate) { _syncWritingAreas(); return; }
@@ -442,6 +445,10 @@ class DocumentViewState extends State<DocumentView>
                         decoration: const BoxDecoration(color: Color(0xfffffdf5),
                           border: Border(left: BorderSide(color: Color(0xffd6d1bf)))),
                         child: Stack(fit: StackFit.expand, children: [
+                          RepaintBoundary(child: CustomPaint(painter: WritingPaperPainter(
+                            pattern: widget.editor.document.writingAreas[page]!.pattern,
+                            spacing: widget.editor.document.writingAreas[page]!.spacing,
+                            scale: view.scale))),
                           RepaintBoundary(child: CustomPaint(painter: CommittedInkPainter(
                             widget.editor, page, view.layout.pages[page].width,
                             surface: InkSurface.notes, referenceSize: view.pageRect(page).size,

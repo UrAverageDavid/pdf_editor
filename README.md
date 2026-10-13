@@ -132,12 +132,19 @@ Each manual addition provides half an original page's width. While writing in an
 existing margin, it automatically grows or shrinks to fit the rightmost ink with
 **40 screen pixels** of blank space, at any writing zoom. Existing notes and the
 whole active stroke stay inside the margin, even when you write farther left.
-Erasing also trims excess space around the remaining notes. Resizing is limited
+Erasing also trims excess space around the remaining notes. The margin never
+shrinks below half the original PDF page width, including when empty. Resizing is limited
 to once per frame without moving the page under the pen, and saves and undoes
 with the stroke or erase gesture. Hovering, touch navigation, and writing on the
 PDF do not resize the margin. Use **Add more space to the right** for manual growth
 and a view that pans to reveal it. **Fit width** fits the PDF and visible writing
 areas together, or use Hand/touch to pan horizontally.
+
+In the **Writing space** menu, choose **Blank**, **Ruled lines**, or **Grid** under
+**Paper pattern**. Ruled and grid paper offer **Small (12 pt)**, **Medium (20 pt)**,
+and **Large (32 pt)** spacing. Guides zoom with the page and keep their positions
+as the margin grows or shrinks. These per-page settings save with your notes,
+support undo/redo, and survive hiding or reopening the writing space.
 
 **Hide writing space (keep notes)** collapses the margin without deleting it.
 The toolbar shows **Notes hidden**, and the thumbnail list marks pages with writing

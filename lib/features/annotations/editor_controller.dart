@@ -116,18 +116,23 @@ class EditorController extends ChangeNotifier {
     execute(StrokeChange(added: [stroke],
       areaPage: resize ? stroke.pageIndex : null,
       areaBefore: resize ? before : null,
-      areaAfter: resize ? WritingArea(width: writingAreaWidth, visible: before.visible) : null));
+      areaAfter: resize ? before.copyWith(width: writingAreaWidth) : null));
   }
 
   void expandWritingArea(int page) {
     final area = document.writingAreas[page];
-    _setWritingArea(page, WritingArea(width: (area?.width ?? 0) + .5));
+    _setWritingArea(page, (area ?? const WritingArea()).copyWith(width: (area?.width ?? 0) + .5));
   }
 
   void toggleWritingArea(int page) {
     final area = document.writingAreas[page];
     _setWritingArea(page, area == null ? const WritingArea() :
-      WritingArea(width: area.width, visible: !area.visible));
+      area.copyWith(visible: !area.visible));
+  }
+
+  void setWritingPaper(int page, {WritingPattern? pattern, WritingSpacing? spacing}) {
+    final area = document.writingAreas[page] ?? const WritingArea();
+    _setWritingArea(page, area.copyWith(pattern: pattern, spacing: spacing, visible: true));
   }
 
   void _setWritingArea(int page, WritingArea area) {
@@ -147,7 +152,7 @@ class EditorController extends ChangeNotifier {
       writingAreaWidth.isFinite && writingAreaWidth > 0 && writingAreaWidth != before.width;
     if (removed.isNotEmpty) execute(StrokeChange(removed: removed,
       areaPage: resize ? page : null, areaBefore: resize ? before : null,
-      areaAfter: resize ? WritingArea(width: writingAreaWidth, visible: before.visible) : null));
+      areaAfter: resize ? before.copyWith(width: writingAreaWidth) : null));
   }
 
   void execute(StrokeChange change) {

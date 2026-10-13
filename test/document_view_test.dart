@@ -13,6 +13,7 @@ import 'package:papertrail/features/pdf_viewer/document_view.dart';
 import 'package:papertrail/features/pdf_viewer/pdf_engine.dart';
 import 'package:papertrail/features/pdf_viewer/render_service.dart';
 import 'package:papertrail/features/pdf_viewer/viewport_controller.dart';
+import 'package:papertrail/features/pdf_viewer/writing_paper_painter.dart';
 
 import 'helpers.dart';
 
@@ -40,12 +41,57 @@ class FakePdf implements PdfDocumentHandle {
 }
 
 void main() {
+  for (final width in [390.0, 1000.0]) {
+    testWidgets('writing space paper menu sets lines, grids and sizes at width $width', (tester) async {
+      tester.view.physicalSize = Size(width, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final renders = RenderService(FakePdf());
+      final repository = MemoryRepository();
+      final editor = EditorController(sampleDocument(), repository);
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: EditorScreen(
+        editor: editor, renders: renders, onOpen: () {}, onBack: () {}))));
+      await tester.pumpAndSettle();
+      Future<void> choose(String label) async {
+        await tester.tap(find.byTooltip('Writing space for page 1'));
+        await tester.pumpAndSettle();
+        final item = find.widgetWithText(CheckedPopupMenuItem<String>, label);
+        await tester.ensureVisible(item);
+        await tester.tap(item);
+        await tester.pumpAndSettle();
+      }
+      WritingPaperPainter paper() => tester.widgetList<CustomPaint>(find.byType(CustomPaint))
+        .map((p) => p.painter).whereType<WritingPaperPainter>().first;
+      await choose('Grid');
+      expect(editor.document.writingAreas[0]!.visible, isTrue);
+      expect(paper().pattern, WritingPattern.grid);
+      await choose('Small (12 pt)');
+      expect(paper().spacing, WritingSpacing.small);
+      await choose('Ruled lines');
+      expect(paper().pattern, WritingPattern.ruled);
+      await choose('Large (32 pt)');
+      expect(paper().spacing, WritingSpacing.large);
+      await choose('Blank');
+      expect(paper().pattern, WritingPattern.blank);
+      expect(editor.document.writingAreas[1], isNull);
+      await editor.flush();
+      final restored = AppDocument.fromJson(repository.saves.last, '');
+      expect(restored.writingAreas[0]!.pattern, WritingPattern.blank);
+      expect(restored.writingAreas[0]!.spacing, WritingSpacing.large);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await renders.close();
+      editor.dispose();
+    });
+  }
+
   for (final zoom in [.45, 1.5]) {
     testWidgets('writing space keeps 40 screen pixels clear at zoom $zoom and grows with one undo step', (tester) async {
       final renders = RenderService(FakePdf());
       final repository = MemoryRepository();
       final saved = sampleDocument();
-      saved.writingAreas[0] = const WritingArea();
+      saved.writingAreas[0] = const WritingArea(pattern: WritingPattern.grid, spacing: WritingSpacing.small);
       final editor = EditorController(saved, repository);
       final viewport = ViewportController(renders.document.pageSizes);
       await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
@@ -96,6 +142,8 @@ void main() {
       expect(repository.saves, hasLength(1));
       final reopened = AppDocument.fromJson(repository.saves.single, '');
       expect(reopened.writingAreas[0]!.width, expanded);
+      expect(reopened.writingAreas[0]!.pattern, WritingPattern.grid);
+      expect(reopened.writingAreas[0]!.spacing, WritingSpacing.small);
       expect(reopened.annotations[0]!.single.toJson(), ink.toJson());
       await tester.pumpWidget(const SizedBox.shrink());
       await renders.close();
@@ -108,7 +156,7 @@ void main() {
     final renders = RenderService(FakePdf());
     final repository = MemoryRepository();
     final saved = sampleDocument();
-    saved.writingAreas[0] = const WritingArea(width: 1);
+    saved.writingAreas[0] = const WritingArea(width: 1, pattern: WritingPattern.ruled, spacing: WritingSpacing.large);
     InkStroke note(String id, double x, double y) => InkStroke(id: id, pageIndex: 0,
       surface: InkSurface.notes, points: [InkPoint(x - .05, y - .05, .75, 0), InkPoint(x, y, .75, 1)],
       width: 4, color: 0xff2947c7, createdAt: DateTime.utc(2026));
@@ -155,7 +203,8 @@ void main() {
     await tester.pump();
     expect(editor.strokes(0).any((stroke) => stroke.id == 'far'), isFalse);
     expect(editor.document.writingAreas[0]!.width, lessThan(fitted));
-    expect(gap(near), closeTo(40, 1e-8));
+    expect(gap(near), greaterThanOrEqualTo(40));
+    expect(editor.document.writingAreas[0]!.width, WritingArea.minimumWidth);
     expect(viewport.offset, beforeErase);
     editor.undo();
     expect(editor.document.writingAreas[0]!.width, fitted);
@@ -164,8 +213,52 @@ void main() {
     await editor.flush();
     final loaded = AppDocument.fromJson(repository.saves.last, '');
     expect(loaded.writingAreas[0]!.width, editor.document.writingAreas[0]!.width);
+    expect(loaded.writingAreas[0]!.pattern, WritingPattern.ruled);
+    expect(loaded.writingAreas[0]!.spacing, WritingSpacing.large);
     expect(loaded.annotations[0]!.map((s) => s.toJson()), editor.strokes(0).map((s) => s.toJson()));
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  });
+
+  testWidgets('empty and lightly used margins stay at least half a page wide', (tester) async {
+    final renders = RenderService(FakePdf());
+    final repository = MemoryRepository();
+    final saved = sampleDocument();
+    saved.writingAreas[0] = const WritingArea(width: 1);
+    final editor = EditorController(saved, repository);
+    final viewport = ViewportController(renders.document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    viewport.setZoom(.45);
+    await tester.pumpAndSettle();
+    final start = viewport.screenRect(viewport.layout.notes[0]).topLeft +
+      const Offset(30, 100) * viewport.scale;
+    final pen = await tester.startGesture(start, kind: PointerDeviceKind.stylus);
+    await tester.pump();
+    expect(viewport.layout.notes[0].width, 306);
+    await pen.up();
+    await tester.pump();
+    expect(editor.document.writingAreas[0]!.width, WritingArea.minimumWidth);
+    editor.setTool(EditorTool.eraser);
+    final eraser = await tester.startGesture(start, kind: PointerDeviceKind.stylus);
+    await eraser.up();
+    await tester.pump();
+    expect(editor.strokes(0), isEmpty);
+    expect(viewport.layout.notes[0].width, 306);
+    expect(editor.document.writingAreas[0]!.width, WritingArea.minimumWidth);
+    await editor.flush();
+    final reopened = AppDocument.fromJson(repository.saves.last, '');
+    expect(reopened.writingAreas[0]!.width, WritingArea.minimumWidth);
+    expect(reopened.strokeCount, 0);
+    editor.undo();
+    expect(editor.strokes(0), hasLength(1));
+    editor.undo();
+    expect(editor.document.writingAreas[0]!.width, 1);
+    expect(editor.strokes(0), isEmpty);
     await tester.pumpWidget(const SizedBox.shrink());
     await renders.close();
     viewport.dispose();
