@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -5,6 +7,35 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:papertrail/features/annotations/ink.dart';
 import 'package:papertrail/features/annotations/ink_painter.dart';
 import 'package:papertrail/features/annotations/pen_preset.dart';
+
+Future<Uint8List> rasterize(void Function(Canvas) paint, Size size) async {
+  final recorder = ui.PictureRecorder();
+  paint(Canvas(recorder));
+  final picture = recorder.endRecording();
+  final image = picture.toImageSync(size.width.ceil(), size.height.ceil());
+  final bytes = (await image.toByteData())!.buffer.asUint8List();
+  image.dispose();
+  picture.dispose();
+  return bytes;
+}
+
+Future<void> expectLiveMatchesStored(ActiveInk ink, Size size) async {
+  // Recreate the painter as writing-space layout changes do during a gesture.
+  final actual = await rasterize((canvas) =>
+    ActiveInkPainter(ink, 0, 100).paint(canvas, size), size);
+  final expected = await rasterize((canvas) => StrokeSmoother.paint(canvas,
+    size, ink.points, ink.width * size.width / 100, Color(ink.color),
+    kind: ink.kind, penStyle: ink.penStyle), size);
+  expect(actual, orderedEquals(expected), reason:
+    '${ink.penStyle?.type}: ${ink.points.length} points at $size');
+}
+
+void appendSamples(ActiveInk ink, int count) {
+  for (var i = ink.points.length; i < count; i++) {
+    ink.points.add(InkPoint(.5 + .4 * math.sin(i / 17),
+      .5 + .4 * math.sin(i / 23), .5 + .5 * math.sin(i / 11), i * 4167));
+  }
+}
 
 Future<int> inkCoverage(PenStyle style, double pressure) async {
   final recorder = ui.PictureRecorder();
@@ -22,6 +53,39 @@ Future<int> inkCoverage(PenStyle style, double pressure) async {
 }
 
 void main() {
+  test('cached live strokes match stored ink across chunk boundaries and changing tails', () async {
+    for (final type in PenType.values) {
+      final ink = ActiveInk()..page = 0..width = 4
+        ..penStyle = PenStyle(type: type, pressureSensitivity: 1, tipSharpness: 1);
+      for (final count in [1, 2, 12, 136, 137, 138, 264, 265, 266, 520]) {
+        appendSamples(ink, count);
+        await expectLiveMatchesStored(ink, const Size(100, 100));
+      }
+      ink.dispose();
+    }
+  });
+
+  test('live cache refreshes after scaling, style changes, clear, and legacy highlighter', () async {
+    final ink = ActiveInk()..page = 0..penStyle = const PenStyle(type: PenType.brush);
+    appendSamples(ink, 400);
+    await expectLiveMatchesStored(ink, const Size(100, 100));
+    await expectLiveMatchesStored(ink, const Size(150, 120));
+    ink.width = 8;
+    ink.color = 0xffdd1133;
+    ink.penStyle = const PenStyle(type: PenType.fountain);
+    await expectLiveMatchesStored(ink, const Size(150, 120));
+    ink.clear();
+    ink.page = 0;
+    appendSamples(ink, 300);
+    await expectLiveMatchesStored(ink, const Size(150, 120));
+    ink.kind = InkKind.highlighter;
+    ink.penStyle = null;
+    await expectLiveMatchesStored(ink, const Size(150, 120));
+    appendSamples(ink, 500);
+    await expectLiveMatchesStored(ink, const Size(150, 120));
+    ink.dispose();
+  });
+
   test('pen styles and sharpness change painted ink; zero sensitivity ignores pressure', () async {
     for (final type in PenType.values.where((type) => type != PenType.highlighter)) {
       final insensitive = PenStyle(type: type, pressureSensitivity: 0, tipSharpness: 0);

@@ -17,6 +17,9 @@ flutter run -d windows
 ```
 
 Use `flutter run -d macos` on a Mac, or `flutter devices` to select an iOS/Android device.
+For handwriting on Windows/Surface, use `flutter run -d windows --release`.
+The default debug build adds overhead; use release for feel and profile mode
+(`flutter run -d windows --profile`) when collecting performance traces.
 Windows requires the Visual Studio desktop C++ toolchain, Windows SDK 10.0.22000.0 or
 newer (for pen haptics declarations), and Developer Mode for the PDF
 plugin's symlinks. macOS/iOS need full Xcode; Apple native PDFium dependencies also need
@@ -209,7 +212,10 @@ lib/features/export/             PdfExporter interface for the next milestone
 ```
 
 Only the PDF adapter imports pdfrx. Pointer samples repaint active ink locally; committed ink
-and PDF images have separate repaint boundaries. Background renders pause while writing;
+and PDF images have separate repaint boundaries. Live pen strokes cache completed segments
+and regenerate only their changing tail, preserving pressure, nib direction, and brush taper.
+Highlighters append to a single path to preserve uniform translucency. Gesture caches reset
+on scale/style changes and are released when the stroke ends. Background renders pause while writing;
 already-running native work finishes. Queued work for disposed pages is cancelled. Images
 have explicit cache/caller ownership and disposal. The cache budget excludes visible image
 references and PDFium's internal memory, so it is not a total-process memory guarantee.
@@ -240,6 +246,11 @@ Surface/pen pair, check vibration during writing and that it stops on lift, Alt-
 cancellation, and close. Also check a non-haptic pen. The native Windows haptics bridge
 requires a Windows build and hardware validation; Flutter tests only mock its channel.
 Use profile/release mode for frame-time and latency measurements.
+
+Run `flutter test tool/ink_render_benchmark_test.dart --reporter expanded` to measure
+Dart-side recording of long live strokes. This benchmark excludes GPU rendering,
+display refresh, and physical pen latency. Raster comparison tests check that the
+cached live renderer matches saved ink across cache boundaries and layout changes.
 
 ## Remaining MVP work
 
