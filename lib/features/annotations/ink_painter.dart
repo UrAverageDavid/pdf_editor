@@ -9,8 +9,30 @@ import 'ink.dart';
 /// Kept separate so stored samples never depend on the painting algorithm.
 class StrokeSmoother {
   static void paint(Canvas canvas, Size size, List<InkPoint> points,
-      double width, Color color) {
+      double width, Color color, {InkKind kind = InkKind.pen,
+      InkShape shape = InkShape.freehand}) {
     if (points.isEmpty) return;
+    if (kind == InkKind.highlighter || shape != InkShape.freehand) {
+      // One path gives the marker uniform opacity, including self-overlaps.
+      final paint = Paint()
+        ..color = kind == InkKind.highlighter ? color.withValues(alpha: .3) : color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = width
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round;
+      final first = points.first.inSize(size);
+      if (points.length == 1) {
+        canvas.drawCircle(first, width / 2, paint..style = PaintingStyle.fill);
+        return;
+      }
+      final path = Path()..moveTo(first.dx, first.dy);
+      for (final point in points.skip(1)) {
+        final next = point.inSize(size);
+        path.lineTo(next.dx, next.dy);
+      }
+      canvas.drawPath(path, paint);
+      return;
+    }
     final paint = Paint()..color = color..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round..strokeJoin = StrokeJoin.round;
     double pointWidth(InkPoint p) => width * (.4 + p.pressure * .8);
@@ -49,7 +71,8 @@ class CommittedInkPainter extends CustomPainter {
       if (stroke.surface == surface && !hidden.contains(stroke.id)) {
         final reference = referenceSize ?? size;
         StrokeSmoother.paint(canvas, reference, stroke.points,
-            stroke.width * reference.width / pageWidth, Color(stroke.color));
+            stroke.width * reference.width / pageWidth, Color(stroke.color),
+            kind: stroke.kind, shape: stroke.shape);
       }
     }
   }
@@ -65,6 +88,7 @@ class ActiveInk extends ChangeNotifier {
   InkSurface surface = InkSurface.page;
   double width = 2;
   int color = 0xff2947c7;
+  InkKind kind = InkKind.pen;
   final points = <InkPoint>[];
   void changed() => notifyListeners();
   void clear() { page = null; points.clear(); notifyListeners(); }
@@ -83,7 +107,7 @@ class ActiveInkPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final reference = referenceSize ?? size;
     if (ink.page == page && ink.surface == surface) StrokeSmoother.paint(canvas, reference, ink.points,
-        ink.width * reference.width / pageWidth, Color(ink.color));
+        ink.width * reference.width / pageWidth, Color(ink.color), kind: ink.kind);
   }
 
   @override

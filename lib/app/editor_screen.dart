@@ -11,6 +11,7 @@ import '../features/pdf_viewer/page_image.dart';
 import '../features/pdf_viewer/render_service.dart';
 import '../features/pdf_viewer/viewport_controller.dart';
 import 'app.dart';
+import 'annotation_toolbar.dart';
 
 class EditorScreen extends StatefulWidget {
   const EditorScreen({super.key, required this.editor, required this.renders,
@@ -84,51 +85,25 @@ class EditorScreenState extends State<EditorScreen> {
         foregroundColor: selected ? accent : ink, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9))),
       icon: Icon(icon, size: 21), selectedIcon: Icon(icon, size: 21));
 
-  @override
-  Widget build(BuildContext context) => CallbackShortcuts(bindings: {
-    const SingleActivator(LogicalKeyboardKey.keyZ, control: true): _undo,
-    const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): _undo,
-    const SingleActivator(LogicalKeyboardKey.keyZ, control: true, shift: true): _redo,
-    const SingleActivator(LogicalKeyboardKey.keyZ, meta: true, shift: true): _redo,
-    const SingleActivator(LogicalKeyboardKey.keyY, control: true): _redo,
-    const SingleActivator(LogicalKeyboardKey.keyS, control: true): () => unawaited(_save()),
-    const SingleActivator(LogicalKeyboardKey.keyS, meta: true): () => unawaited(_save()),
-    const SingleActivator(LogicalKeyboardKey.keyO, control: true): widget.onOpen,
-    const SingleActivator(LogicalKeyboardKey.keyO, meta: true): widget.onOpen,
-    const SingleActivator(LogicalKeyboardKey.keyP): () => _tool(EditorTool.pen),
-    const SingleActivator(LogicalKeyboardKey.keyE): () => _tool(EditorTool.eraser),
-    const SingleActivator(LogicalKeyboardKey.keyH): () => _tool(EditorTool.hand),
-  }, child: Focus(autofocus: true, child: Column(children: [
-    Container(height: 64, padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xffdddfd7)))),
+  Widget _documentBar(BuildContext context) {
+    final compact = MediaQuery.sizeOf(context).width < 700;
+    Widget action(IconData icon, String label, VoidCallback onPressed, {bool selected = false}) =>
+      IconButton(tooltip: label, onPressed: onPressed, isSelected: selected,
+        style: IconButton.styleFrom(foregroundColor: Colors.white,
+          backgroundColor: selected ? Colors.white.withValues(alpha: .18) : Colors.transparent,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+        icon: Icon(icon, size: 21));
+    return Container(height: 56, padding: const EdgeInsets.symmetric(horizontal: 8),
+      color: const Color(0xff315f96),
       child: Row(children: [
-        _button(Icons.arrow_back_rounded, 'Back to documents', widget.onBack),
-        const SizedBox(width: 8), const Icon(Icons.description_outlined, color: accent, size: 21),
-        const SizedBox(width: 10), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center, children: [
-            Text(editor.document.displayName, maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-            const SizedBox(height: 3), const Text('Your original PDF stays untouched',
-              style: TextStyle(fontSize: 11, color: Color(0xff777e75))),
-          ])),
-        _button(Icons.file_open_outlined, 'Open another PDF', widget.onOpen),
-        PopupMenuButton<String>(tooltip: 'Document options', onSelected: (value) {
-          if (value == 'backup') widget.onBackup?.call();
-          if (value == 'about') showAboutDialog(context: context, applicationName: 'Papertrail',
-            applicationVersion: 'Prototype 0.1', children: [const Text(
-              'Pen or mouse draws. Touch scrolls and pinches to zoom. P: pen, E: eraser, H: hand.\n\n'
-              'Notes save locally and reopen automatically. Annotated PDF export, high-resolution tiles, '
-              'and Surface hardware tuning are next milestones.')]);
-        }, itemBuilder: (_) => [
-          if (widget.onBackup != null) const PopupMenuItem(value: 'backup', child: Text('Save annotation backup…')),
-          const PopupMenuItem(value: 'about', child: Text('About this prototype')),
-        ]),
-      ])),
-    Container(height: 64, padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [
-        _button(Icons.view_sidebar_outlined, 'Toggle page thumbnails', () {
+        action(Icons.arrow_back_rounded, 'Back to documents', widget.onBack),
+        action(Icons.view_sidebar_outlined, 'Toggle page thumbnails', () {
           finishInput(); setState(() => _thumbnails = !_thumbnails);
         }, selected: _thumbnails),
+        const SizedBox(width: 8),
+        Expanded(child: Text(editor.document.displayName, maxLines: 1, overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14))),
+        const SizedBox(width: 8),
         AnimatedBuilder(animation: _viewport, builder: (context, _) {
           final page = _viewport.currentPage;
           final area = editor.document.writingAreas[page];
@@ -148,42 +123,55 @@ class EditorScreenState extends State<EditorScreen> {
                 area.visible ? 'Hide writing space (keep notes)' : 'Show writing space')),
               if (area != null) const PopupMenuItem(value: 'expand', child: Text('Add more space to the right')),
             ],
-            child: Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: SizedBox(height: 44, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 10),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 Icon(area == null ? Icons.note_add_outlined : Icons.sticky_note_2_outlined,
-                  size: 21, color: area == null ? ink : accent),
-                const SizedBox(width: 6),
-                Text(area == null ? 'Add writing space' : area.visible ? 'Writing space' : 'Notes hidden'),
-                const Icon(Icons.arrow_drop_down, size: 18),
-              ])),
+                  size: 21, color: Colors.white),
+                if (!compact) ...[
+                  const SizedBox(width: 6),
+                  Text(area == null ? 'Add writing space' : area.visible ? 'Writing space' : 'Notes hidden',
+                    style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  const Icon(Icons.arrow_drop_down, size: 18, color: Colors.white),
+                ],
+              ]))),
           );
         }),
-        const SizedBox(width: 12),
-        _button(Icons.edit_outlined, 'Pen (P)', () => _tool(EditorTool.pen), selected: editor.tool == EditorTool.pen),
-        const SizedBox(width: 4),
-        _button(Icons.auto_fix_normal_outlined, 'Stroke eraser (E)', () => _tool(EditorTool.eraser), selected: editor.tool == EditorTool.eraser),
-        const SizedBox(width: 4),
-        _button(Icons.pan_tool_outlined, 'Hand (H)', () => _tool(EditorTool.hand), selected: editor.tool == EditorTool.hand),
-        const SizedBox(width: 16), const SizedBox(height: 26, child: VerticalDivider()), const SizedBox(width: 12),
-        _button(Icons.undo_rounded, 'Undo', editor.canUndo ? _undo : null),
-        _button(Icons.redo_rounded, 'Redo', editor.canRedo ? _redo : null),
-        const SizedBox(width: 16), const SizedBox(height: 26, child: VerticalDivider()), const SizedBox(width: 16),
-        for (final color in [0xff2947c7, 0xff242c35, 0xffb34a3e, 0xff39755b])
-          Padding(padding: const EdgeInsets.only(right: 3), child: Semantics(
-            label: {0xff2947c7: 'Blue ink', 0xff242c35: 'Black ink', 0xffb34a3e: 'Red ink', 0xff39755b: 'Green ink'}[color],
-            selected: color == editor.color, button: true,
-            child: IconButton(tooltip: 'Choose ${ {0xff2947c7: 'blue', 0xff242c35: 'black', 0xffb34a3e: 'red', 0xff39755b: 'green'}[color]} ink',
-              onPressed: () { finishInput(); editor.setColor(color); },
-              icon: Container(width: 24, height: 24, decoration: BoxDecoration(shape: BoxShape.circle,
-                color: Color(color), border: color == editor.color ? Border.all(color: Colors.white, width: 3) : null,
-                boxShadow: color == editor.color ? [BoxShadow(color: Color(color), spreadRadius: 2)] : null))))),
-        const SizedBox(width: 12),
-        DropdownButtonHideUnderline(child: DropdownButton<double>(value: editor.width,
-          items: const [DropdownMenuItem(value: 1.2, child: Text('Fine')),
-            DropdownMenuItem(value: 2.2, child: Text('Medium')),
-            DropdownMenuItem(value: 4.0, child: Text('Bold'))],
-          onChanged: (value) { if (value != null) { finishInput(); editor.setWidth(value); } })),
-      ]))),
+        action(Icons.file_open_outlined, 'Open another PDF', widget.onOpen),
+        PopupMenuButton<String>(tooltip: 'Document options',
+          icon: const Icon(Icons.more_horiz, color: Colors.white), onSelected: (value) {
+          if (value == 'backup') widget.onBackup?.call();
+          if (value == 'about') showAboutDialog(context: context, applicationName: 'Papertrail',
+            applicationVersion: 'Prototype 0.1', children: [const Text(
+              'Pen or mouse draws. Touch scrolls and pinches to zoom. '
+              'P: pen, M: highlighter, E: eraser, H: hand, S: shape detection.\n\n'
+              'Notes save locally and reopen automatically. Annotated PDF export, high-resolution tiles, '
+              'and Surface hardware tuning are next milestones.')]);
+        }, itemBuilder: (_) => [
+          if (widget.onBackup != null) const PopupMenuItem(value: 'backup', child: Text('Save annotation backup…')),
+          const PopupMenuItem(value: 'about', child: Text('About this prototype')),
+        ]),
+      ]));
+  }
+
+  @override
+  Widget build(BuildContext context) => CallbackShortcuts(bindings: {
+    const SingleActivator(LogicalKeyboardKey.keyZ, control: true): _undo,
+    const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): _undo,
+    const SingleActivator(LogicalKeyboardKey.keyZ, control: true, shift: true): _redo,
+    const SingleActivator(LogicalKeyboardKey.keyZ, meta: true, shift: true): _redo,
+    const SingleActivator(LogicalKeyboardKey.keyY, control: true): _redo,
+    const SingleActivator(LogicalKeyboardKey.keyS, control: true): () => unawaited(_save()),
+    const SingleActivator(LogicalKeyboardKey.keyS, meta: true): () => unawaited(_save()),
+    const SingleActivator(LogicalKeyboardKey.keyO, control: true): widget.onOpen,
+    const SingleActivator(LogicalKeyboardKey.keyO, meta: true): widget.onOpen,
+    const SingleActivator(LogicalKeyboardKey.keyP): () => _tool(EditorTool.pen),
+    const SingleActivator(LogicalKeyboardKey.keyM): () => _tool(EditorTool.highlighter),
+    const SingleActivator(LogicalKeyboardKey.keyS): () { finishInput(); editor.toggleShapeDetection(); },
+    const SingleActivator(LogicalKeyboardKey.keyE): () => _tool(EditorTool.eraser),
+    const SingleActivator(LogicalKeyboardKey.keyH): () => _tool(EditorTool.hand),
+  }, child: Focus(autofocus: true, child: Column(children: [
+    _documentBar(context),
+    AnnotationToolbar(editor: editor, finishInput: finishInput),
     if (editor.saveState == SaveState.failed) MaterialBanner(
       backgroundColor: const Color(0xffffeadc),
       content: Text('Notes are not saved: ${editor.saveError}. Keep this document open.'),

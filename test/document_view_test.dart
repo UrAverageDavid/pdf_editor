@@ -40,6 +40,194 @@ class FakePdf implements PdfDocumentHandle {
 }
 
 void main() {
+  testWidgets('fine tip picker validates, previews, applies and preserves independent tool sizes', (tester) async {
+    final renders = RenderService(FakePdf());
+    final repository = MemoryRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: EditorScreen(
+      editor: editor, renders: renders, onOpen: () {}, onBack: () {}))));
+    await tester.pumpAndSettle();
+    final picker = find.byKey(const ValueKey('width-picker'));
+    Future<void> openPicker() async {
+      await tester.ensureVisible(picker);
+      await tester.tap(picker);
+      await tester.pumpAndSettle();
+    }
+    await openPicker();
+    await tester.tap(find.widgetWithText(ChoiceChip, '0.25'));
+    await tester.pump();
+    expect(editor.width, 2.2); // Preview doesn't change the selected tip until Apply.
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(editor.width, 2.2);
+    await openPicker();
+    final input = find.byKey(const ValueKey('tip-size-input'));
+    await tester.enterText(input, '0');
+    await tester.pump();
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Apply')).onPressed, isNull);
+    await tester.enterText(input, 'NaN');
+    await tester.pump();
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Apply')).onPressed, isNull);
+    await tester.enterText(input, '0.25');
+    await tester.pump();
+    await tester.tap(find.text('Apply'));
+    await tester.pumpAndSettle();
+    expect(editor.width, .25);
+    expect(find.text('0.25 pt'), findsOneWidget);
+    final pen = await tester.startGesture(const Offset(200, 250), kind: PointerDeviceKind.stylus);
+    await pen.moveTo(const Offset(320, 260));
+    await pen.up();
+    await tester.pump();
+    expect(editor.strokes(0).single.width, .25);
+    await editor.flush();
+    expect(AppDocument.fromJson(repository.saves.last, '/source.pdf').annotations[0]!.single.width, .25);
+    await tester.ensureVisible(find.byTooltip('Highlighter (M)'));
+    await tester.tap(find.byTooltip('Highlighter (M)'));
+    await tester.pumpAndSettle();
+    await openPicker();
+    expect(find.text('Highlighter width'), findsWidgets);
+    await tester.enterText(input, '24');
+    await tester.pump();
+    await tester.tap(find.text('Apply'));
+    await tester.pumpAndSettle();
+    expect(editor.highlighterWidth, 24);
+    await tester.ensureVisible(find.byTooltip('Pen (P)'));
+    await tester.tap(find.byTooltip('Pen (P)'));
+    await tester.pumpAndSettle();
+    expect(editor.width, .25);
+    expect(find.text('0.25 pt'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    editor.dispose();
+  });
+
+  for (final width in [390.0, 1200.0]) {
+    testWidgets('drawing palette is usable at width $width', (tester) async {
+      tester.view.physicalSize = Size(width, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final renders = RenderService(FakePdf());
+      final editor = EditorController(sampleDocument(), MemoryRepository());
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: EditorScreen(
+        editor: editor, renders: renders, onOpen: () {}, onBack: () {}))));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      final fineTip = find.byTooltip('0.35 pt pen');
+      await tester.ensureVisible(fineTip);
+      await tester.tap(fineTip);
+      await tester.pumpAndSettle();
+      expect(editor.width, .35);
+      final color = find.byTooltip('Choose green ink');
+      await tester.ensureVisible(color);
+      await tester.tap(color);
+      await tester.pumpAndSettle();
+      expect(editor.color, 0xff39755b);
+      final picker = find.byKey(const ValueKey('width-picker'));
+      await tester.ensureVisible(picker);
+      await tester.tap(picker);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await renders.close();
+      editor.dispose();
+    });
+  }
+
+  testWidgets('pen detector snaps on lift; highlighter stays freehand; undo and erase work', (tester) async {
+    final renders = RenderService(FakePdf());
+    final repository = MemoryRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    final viewport = ViewportController(renders.document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    Future<void> draw(List<Offset> vertices) async {
+      final pen = await tester.startGesture(vertices.first, kind: PointerDeviceKind.stylus);
+      var time = 0;
+      for (var i = 1; i < vertices.length; i++) {
+        for (var step = 1; step <= 20; step++) {
+          time += 16;
+          await pen.moveTo(Offset.lerp(vertices[i - 1], vertices[i], step / 20)!,
+            timeStamp: Duration(milliseconds: time));
+        }
+      }
+      await pen.up();
+      await tester.pump();
+    }
+    const line = [Offset(200, 150), Offset(350, 153)];
+    await draw(line);
+    expect(editor.strokes(0).last.shape, InkShape.freehand);
+    editor.toggleShapeDetection();
+    await draw(line);
+    expect(editor.strokes(0).last.shape, InkShape.line);
+    expect(editor.strokes(0).last.points.length, 2);
+    await draw(const [Offset(200, 200), Offset(350, 200), Offset(350, 300),
+      Offset(200, 300), Offset(200, 200)]);
+    expect(editor.strokes(0).last.shape, InkShape.rectangle);
+    await draw(const [Offset(200, 350), Offset(350, 350), Offset(320, 330),
+      Offset(350, 350), Offset(320, 370)]);
+    expect(editor.strokes(0).last.shape, InkShape.arrow);
+    editor.setTool(EditorTool.highlighter);
+    await draw(line);
+    final highlight = editor.strokes(0).last;
+    expect(highlight.kind, InkKind.highlighter);
+    expect(highlight.shape, InkShape.freehand);
+    expect(highlight.width, 16);
+    expect(highlight.color, 0xffffd740);
+    editor.undo();
+    expect(editor.strokes(0).last.shape, InkShape.arrow);
+    editor.redo();
+    expect(editor.strokes(0).last, same(highlight));
+    editor.setTool(EditorTool.eraser);
+    await draw(const [Offset(280, 130), Offset(280, 170)]);
+    expect(editor.strokes(0).map((s) => s.shape), [InkShape.rectangle, InkShape.arrow]);
+    editor.undo();
+    expect(editor.strokes(0).last, same(highlight));
+    await editor.flush();
+    final loaded = AppDocument.fromJson(repository.saves.last, '/source.pdf');
+    expect(loaded.annotations[0]!.map((s) => s.toJson()), editor.strokes(0).map((s) => s.toJson()));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  });
+
+  testWidgets('dot follows mouse and pen hover, hides on exit, and hand keeps its cursor', (tester) async {
+    final renders = RenderService(FakePdf());
+    final editor = EditorController(sampleDocument(), MemoryRepository());
+    final viewport = ViewportController(renders.document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    final region = find.byWidgetPredicate((w) => w is MouseRegion && w.onExit != null &&
+      (w.cursor == SystemMouseCursors.none || w.cursor == SystemMouseCursors.grab));
+    expect(tester.widget<MouseRegion>(region).cursor, SystemMouseCursors.none);
+    final dot = find.byKey(const ValueKey('pen-cursor-dot'));
+    for (final kind in [PointerDeviceKind.mouse, PointerDeviceKind.stylus]) {
+      final pointer = await tester.createGesture(kind: kind);
+      await pointer.addPointer(location: const Offset(200, 150));
+      await pointer.moveTo(const Offset(220, 160));
+      await tester.pump();
+      final painted = tester.widget<CustomPaint>(dot).painter!;
+      await pointer.moveTo(const Offset(250, 180));
+      await tester.pump();
+      expect(tester.widget<CustomPaint>(dot).painter!.shouldRepaint(painted), isTrue);
+      await pointer.removePointer();
+      await tester.pump();
+    }
+    editor.setTool(EditorTool.hand);
+    await tester.pump();
+    expect(dot, findsNothing);
+    expect(tester.widget<MouseRegion>(region).cursor, SystemMouseCursors.grab);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  });
+
   for (final kind in [PointerDeviceKind.mouse, PointerDeviceKind.stylus, PointerDeviceKind.touch]) {
     testWidgets('$kind scrollbar follows navigation and drags without creating ink', (tester) async {
       final document = FakePdf();

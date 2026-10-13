@@ -11,6 +11,7 @@ import '../annotations/ink.dart';
 import '../annotations/ink_filter.dart';
 import '../annotations/ink_painter.dart';
 import '../annotations/pen_haptics.dart';
+import '../annotations/shape_detector.dart';
 import 'document_scrollbar.dart';
 import 'page_image.dart';
 import 'render_service.dart';
@@ -32,6 +33,8 @@ class DocumentViewState extends State<DocumentView>
   final _ink = ActiveInk();
   final _filter = InkFilter();
   final _haptics = PenHaptics();
+  final _cursor = ValueNotifier<Offset?>(null);
+  bool _detectShape = false;
   late final ScrollMotion _scroll;
   bool _penInking = false;
   final _touches = <int, Offset>{};
@@ -55,8 +58,9 @@ class DocumentViewState extends State<DocumentView>
     WidgetsBinding.instance.addObserver(this);
     _syncWritingAreas();
     view.addListener(_rebuild);
-    widget.editor.addListener(_syncWritingAreas);
+    widget.editor.addListener(_editorChanged);
   }
+  void _editorChanged() { _syncWritingAreas(); if (mounted) setState(() {}); }
   void _syncWritingAreas() => view.setWritingAreas({
     for (final entry in widget.editor.document.writingAreas.entries)
       if (entry.value.visible) entry.key: entry.value.width,
@@ -70,6 +74,7 @@ class DocumentViewState extends State<DocumentView>
   }
 
   void _hover(PointerHoverEvent e) {
+    _updateCursor(e);
     if (_pointer != null || _touches.isNotEmpty ||
         (e.kind != PointerDeviceKind.mouse && !_isPen(e))) return;
     final position = e.localPosition;
@@ -111,10 +116,15 @@ class DocumentViewState extends State<DocumentView>
 
   bool _isPen(PointerEvent e) => e.kind == PointerDeviceKind.stylus ||
       e.kind == PointerDeviceKind.invertedStylus;
+  void _updateCursor(PointerEvent e) {
+    _cursor.value = e.kind == PointerDeviceKind.mouse || e.kind == PointerDeviceKind.stylus
+      ? e.localPosition : null;
+  }
   bool get _palmSuppressed => _pointer != null ||
       DateTime.now().difference(_lastPen).inMilliseconds < 180;
 
   void _down(PointerDownEvent e) {
+    _updateCursor(e);
     // The popup's button handles this contact; it must never create ink below it.
     if (_edgePopup?.contains(e.localPosition) ?? false) return;
     _hideEdgePopup();
@@ -136,8 +146,10 @@ class DocumentViewState extends State<DocumentView>
       widget.renders.inkActive = true;
       _ink.page = page;
       _ink.surface = onPage ? InkSurface.page : InkSurface.notes;
-      _ink.width = widget.editor.width;
-      _ink.color = widget.editor.color;
+      _ink.width = widget.editor.activeWidth;
+      _ink.color = widget.editor.activeColor;
+      _ink.kind = widget.editor.highlighting ? InkKind.highlighter : InkKind.pen;
+      _detectShape = widget.editor.detectShapes && _ink.kind == InkKind.pen;
       _filter.reset();
       _penInking = _isPen(e) && !_erasing;
       if (_penInking) unawaited(_haptics.start());
@@ -149,6 +161,7 @@ class DocumentViewState extends State<DocumentView>
   }
 
   void _move(PointerMoveEvent e) {
+    if (e.pointer == _pointer || _pointer == null) _updateCursor(e);
     if (_isPen(e)) _lastPen = DateTime.now();
     if (e.pointer == _pointer) { _sample(e); return; }
     if (_pointer != null || !_touches.containsKey(e.pointer)) return;
@@ -200,7 +213,7 @@ class DocumentViewState extends State<DocumentView>
   }
 
   /// Also used before focus loss, document switching, export, and normal exit.
-  void finishInput() {
+  void finishInput({bool recognizeShape = false}) {
     _scroll.stop();
     if (_penInking) unawaited(_haptics.stop());
     _penInking = false;
@@ -214,9 +227,17 @@ class DocumentViewState extends State<DocumentView>
         _ink.points.add(endpoint);
       }
       final now = DateTime.now();
+      var detected = _detectShape && recognizeShape ? ShapeDetector.detect(_ink.points,
+        view.layout.pages[_page!].size) : null;
+      // Snapping must never put saved ink beyond its page or writing area.
+      final maxX = _ink.surface == InkSurface.page ? 1.0 :
+        view.layout.notes[_page!].width / view.layout.pages[_page!].width;
+      if (detected != null && detected.points.any((p) =>
+          p.x < 0 || p.x > maxX || p.y < 0 || p.y > 1)) detected = null;
       widget.editor.addStroke(InkStroke(
         id: '${now.microsecondsSinceEpoch}-${_strokeSequence++}', pageIndex: _page!,
-        points: _ink.points, width: _ink.width, color: _ink.color, createdAt: now,
+        points: detected?.points ?? _ink.points, width: _ink.width, color: _ink.color, createdAt: now,
+        kind: _ink.kind, shape: detected?.shape ?? InkShape.freehand,
         surface: _ink.surface));
     }
     _pointer = null;
@@ -231,7 +252,8 @@ class DocumentViewState extends State<DocumentView>
   }
 
   void _up(PointerEvent e) {
-    if (e.pointer == _pointer) finishInput();
+    if (e.pointer == _pointer) finishInput(recognizeShape: e is PointerUpEvent);
+    if (e is PointerCancelEvent) _cursor.value = null;
     final wasDragging = _touches.remove(e.pointer) != null;
     if (wasDragging && _touches.isEmpty && e is PointerUpEvent &&
         e.kind == PointerDeviceKind.touch) {
@@ -272,12 +294,12 @@ class DocumentViewState extends State<DocumentView>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) finishInput();
+    if (state != AppLifecycleState.resumed) { finishInput(); _cursor.value = null; }
   }
 
   @override
   void didChangeViewFocus(ViewFocusEvent event) {
-    if (event.state == ViewFocusState.unfocused) finishInput();
+    if (event.state == ViewFocusState.unfocused) { finishInput(); _cursor.value = null; }
   }
 
   @override
@@ -288,7 +310,8 @@ class DocumentViewState extends State<DocumentView>
     view.inputActive = false;
     widget.renders.inkActive = false;
     view.removeListener(_rebuild);
-    widget.editor.removeListener(_syncWritingAreas);
+    widget.editor.removeListener(_editorChanged);
+    _cursor.dispose();
     _ink.dispose();
     super.dispose();
   }
@@ -303,8 +326,9 @@ class DocumentViewState extends State<DocumentView>
     return Stack(fit: StackFit.expand, children: [
       Semantics(label: 'PDF canvas. Pen or mouse draws; touch scrolls and pinches to zoom.',
       child: MouseRegion(cursor: widget.editor.tool == EditorTool.hand
-        ? SystemMouseCursors.grab : SystemMouseCursors.precise,
-        onExit: (_) => _hideEdgePopup(),
+        ? SystemMouseCursors.grab : widget.editor.tool == EditorTool.eraser
+          ? SystemMouseCursors.precise : SystemMouseCursors.none,
+        onExit: (_) { _cursor.value = null; _hideEdgePopup(); },
         child: Listener(
           behavior: HitTestBehavior.opaque,
           onPointerDown: _down, onPointerMove: _move,
@@ -355,6 +379,12 @@ class DocumentViewState extends State<DocumentView>
                 child: IgnorePointer(child: DecoratedBox(decoration: BoxDecoration(
                   shape: BoxShape.circle, color: Colors.white.withValues(alpha: .5),
                   border: Border.all(color: const Color(0xff2947c7), width: 1.5))))),
+              if (widget.editor.tool == EditorTool.pen || widget.editor.highlighting)
+                Positioned.fill(child: IgnorePointer(child: RepaintBoundary(child: ValueListenableBuilder<Offset?>(
+                  valueListenable: _cursor, builder: (context, position, _) =>
+                    CustomPaint(key: const ValueKey('pen-cursor-dot'),
+                      painter: _PenDotPainter(position, Color(widget.editor.activeColor))),
+                )))),
               if (_edgePage != null && _edgePopup != null)
                 Positioned.fromRect(rect: _edgePopup!,
                   child: Material(elevation: 4, color: Theme.of(context).colorScheme.surface,
@@ -381,4 +411,18 @@ class DocumentViewState extends State<DocumentView>
         }))),
     ]);
   });
+}
+
+class _PenDotPainter extends CustomPainter {
+  const _PenDotPainter(this.position, this.color);
+  final Offset? position;
+  final Color color;
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (position == null) return;
+    canvas.drawCircle(position!, 3.5, Paint()..color = Colors.white);
+    canvas.drawCircle(position!, 2.5, Paint()..color = color);
+  }
+  @override
+  bool shouldRepaint(_PenDotPainter old) => old.position != position || old.color != color;
 }

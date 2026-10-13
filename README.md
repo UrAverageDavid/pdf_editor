@@ -61,6 +61,9 @@ haptics still require a Windows build and Surface hardware validation.
 - Touch pan/pinch with release momentum, trackpad pan/zoom, eased and accelerated
   wheel/precision scrolling, Ctrl/Cmd-wheel zoom, fit width.
 - Pen color and width; whole-stroke eraser, including inverted stylus when reported.
+- Translucent highlighter with independent colors/widths and a dot drawing cursor.
+- Optional pen shape detection for lines, single-stroke arrows, rectangles/squares,
+  triangles, and circles/ellipses.
 - Per-page writing space to the right: add, expand, hide/show, autosave, and undo/redo.
 - Grouped erase undo/redo, with a 100-command in-memory history limit.
 - Debounced saves, serialized writes, checksum-verified generations, and recovery from a
@@ -73,6 +76,28 @@ haptics still require a Windows build and Surface hardware validation.
 Open a PDF or choose **Try the practice document**. Pen and left mouse drag draw. Touch never
 creates ink: one finger pans and two fingers zoom. Select Hand to pan with a mouse.
 The eraser removes whole strokes; one eraser gesture is one undo step.
+
+Select **Highlighter (M)** for translucent marks. Choose yellow, mint, cyan, or pink
+and a stroke-width preview; switching back to Pen restores its color and width.
+Highlight opacity stays uniform within a stroke, even when retraced. Separate
+overlapping highlights build up color. Highlights save, erase, and undo like pen ink.
+
+The drawing palette groups tools, three quick stroke-width previews, the current
+size, and color swatches. Tap the size (such as **2.2 pt**) to open the tip picker:
+choose a preset, drag the slider, or type an exact size and press **Apply**.
+Pen tips range from **0.10–8 pt**, including 0.25, 0.35, 0.5, and 0.7 pt fine tips;
+the pen slider adjusts in 0.05 pt steps. Highlighter widths range from **6–40 pt**.
+The preview updates before applying; Cancel keeps the previous size. On narrow
+windows, swipe or scroll the palette sideways to reach every control. Document
+and writing-space controls sit in the blue top bar; undo/redo stay beside the palette.
+
+Enable **Detect shapes (S)** to tidy pen strokes on lift. It starts off so normal
+handwriting stays freehand. Draw a line, rectangle/square (including rotated ones),
+triangle, or circle/ellipse in one gesture. For an arrow, draw the shaft to the tip,
+draw one wing, retrace to the tip, then draw the other wing without lifting.
+Close geometric outlines near their starting point. Unrecognized strokes remain
+freehand; highlighter strokes are never converted. Each detected shape is one
+erasable annotation and one undo step, on either the PDF or its writing space.
 
 Pen vibration uses Windows' `InkContinuous` waveform at moderate intensity when the
 pen supports it. It requires both a haptic-capable pen (such as Surface Slim Pen 2)
@@ -112,6 +137,8 @@ Annotation JSON backups include it. PDF export of these notes is not implemented
 | Action | Shortcut |
 | --- | --- |
 | Pen / eraser / hand | P / E / H |
+| Highlighter | M |
+| Toggle pen shape detection | S |
 | Undo | Ctrl/Cmd+Z |
 | Redo | Ctrl/Cmd+Shift+Z; Ctrl+Y |
 | Flush pending saves | Ctrl/Cmd+S |
@@ -208,7 +235,7 @@ This is the first working-slice implementation, **not the complete MVP**.
    stylus/platform adaptation based on actual device profiling.
 6. Validate mobile file-provider behavior, orientation changes, accessibility, and native builds.
 
-Cloud accounts, sync, OCR, highlighter, lasso, and notebook hierarchy remain outside this slice.
+Cloud accounts, sync, OCR, lasso, and notebook hierarchy remain outside this slice.
 
 Dependency API references: [pdfrx](https://pub.dev/packages/pdfrx),
 [file_selector](https://pub.dev/packages/file_selector),

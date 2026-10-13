@@ -1,8 +1,10 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
-enum EditorTool { pen, eraser, hand }
+enum EditorTool { pen, highlighter, eraser, hand }
 enum InkSurface { page, notes }
+enum InkKind { pen, highlighter }
+enum InkShape { freehand, line, arrow, rectangle, triangle, ellipse }
 
 /// Coordinates use the original displayed (rotated) page size as their unit.
 /// The origin is the top-left of the stroke's surface; note x may exceed 1.
@@ -31,13 +33,16 @@ class InkPoint {
 class InkStroke {
   InkStroke({required this.id, required this.pageIndex, required List<InkPoint> points,
     required this.width, required this.color, required this.createdAt,
-    this.surface = InkSurface.page})
+    this.surface = InkSurface.page, this.kind = InkKind.pen,
+    this.shape = InkShape.freehand})
       : points = List.unmodifiable(points);
 
   final String id;
   final int pageIndex;
   /// Notes use the original page size as a fixed reference, even when expanded.
   final InkSurface surface;
+  final InkKind kind;
+  final InkShape shape;
   final List<InkPoint> points;
   /// Width in PDF display points, independent of viewport size or zoom.
   final double width;
@@ -46,6 +51,7 @@ class InkStroke {
 
   Map<String, dynamic> toJson() => {
     'id': id, 'page': pageIndex, 'surface': surface.name,
+    'kind': kind.name, 'shape': shape.name,
     'points': points.map((p) => p.toJson()).toList(),
     'width': width, 'color': color, 'createdAt': createdAt.toIso8601String(),
   };
@@ -57,6 +63,12 @@ class InkStroke {
       _ => throw const FormatException('Invalid ink surface'),
     };
     final width = (value['width'] as num).toDouble();
+    T decode<T extends Enum>(List<T> values, String key, T fallback) {
+      final name = value[key];
+      if (name == null) return fallback;
+      for (final item in values) { if (item.name == name) return item; }
+      throw FormatException('Invalid ink $key');
+    }
     final points = (value['points'] as List<dynamic>)
         .map((p) => InkPoint.fromJson(p as List<dynamic>, extended: surface == InkSurface.notes)).toList();
     if (!width.isFinite || width <= 0 || points.isEmpty) {
@@ -64,6 +76,8 @@ class InkStroke {
     }
     return InkStroke(id: value['id'] as String, pageIndex: value['page'] as int, surface: surface,
       points: points, width: width, color: value['color'] as int,
+      kind: decode(InkKind.values, 'kind', InkKind.pen),
+      shape: decode(InkShape.values, 'shape', InkShape.freehand),
       createdAt: DateTime.parse(value['createdAt'] as String));
   }
 }

@@ -10,6 +10,46 @@ import 'package:papertrail/features/document/app_document.dart';
 import 'helpers.dart';
 
 void main() {
+  test('legacy strokes default to freehand pen; new styles survive save and history', () async {
+    final legacy = stroke('old').toJson()..remove('kind')..remove('shape');
+    expect(InkStroke.fromJson(legacy).kind, InkKind.pen);
+    expect(InkStroke.fromJson(legacy).shape, InkShape.freehand);
+    final repository = MemoryRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    for (final kind in InkKind.values) {
+      editor.addStroke(InkStroke(id: kind.name, pageIndex: 0, points: stroke('a').points,
+        width: kind == InkKind.highlighter ? 16 : 2.2, color: 0xffffd740,
+        createdAt: DateTime.utc(2026), kind: kind,
+        shape: kind == InkKind.pen ? InkShape.line : InkShape.freehand));
+    }
+    final original = editor.strokes(0).map((s) => s.toJson()).toList();
+    editor.erase({'pen', 'highlighter'}, 0);
+    expect(editor.strokes(0), isEmpty);
+    editor.undo();
+    expect(editor.strokes(0).map((s) => s.toJson()), original);
+    editor.undo();
+    editor.redo();
+    await editor.flush();
+    final restored = AppDocument.fromJson(repository.saves.last, '/source.pdf');
+    expect(restored.annotations[0]!.map((s) => s.toJson()), original);
+    editor.dispose();
+  });
+
+  test('highlighter color and width stay separate from the pen', () {
+    final editor = EditorController(sampleDocument(), MemoryRepository());
+    editor.setTool(EditorTool.highlighter);
+    editor.setColor(0xffff80ab);
+    editor.setWidth(24);
+    expect(editor.tool, EditorTool.highlighter);
+    editor.setTool(EditorTool.pen);
+    expect(editor.activeColor, 0xff2947c7);
+    expect(editor.activeWidth, 2.2);
+    editor.setTool(EditorTool.highlighter);
+    expect(editor.activeColor, 0xffff80ab);
+    expect(editor.activeWidth, 24);
+    editor.dispose();
+  });
+
   test('legacy notes load without changing original page coordinates', () {
     final json = sampleDocument().toJson();
     json['schema'] = 1;

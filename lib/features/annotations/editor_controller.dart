@@ -37,6 +37,12 @@ class EditorController extends ChangeNotifier {
   EditorTool tool = EditorTool.pen;
   int color = 0xff2947c7;
   double width = 2.2;
+  int highlighterColor = 0xffffd740;
+  double highlighterWidth = 16;
+  bool detectShapes = false;
+  bool get highlighting => tool == EditorTool.highlighter;
+  int get activeColor => highlighting ? highlighterColor : color;
+  double get activeWidth => highlighting ? highlighterWidth : width;
   bool get canUndo => _undo.isNotEmpty;
   bool get canRedo => _redo.isNotEmpty;
   bool get isDirty => _revision != _savedRevision;
@@ -46,8 +52,16 @@ class EditorController extends ChangeNotifier {
   List<InkStroke> strokes(int page) => document.annotations[page] ?? const [];
 
   void setTool(EditorTool value) { tool = value; notifyListeners(); }
-  void setColor(int value) { color = value; tool = EditorTool.pen; notifyListeners(); }
-  void setWidth(double value) { width = value; notifyListeners(); }
+  void setColor(int value) {
+    if (highlighting) { highlighterColor = value; }
+    else { color = value; tool = EditorTool.pen; }
+    notifyListeners();
+  }
+  void setWidth(double value) {
+    if (highlighting) { highlighterWidth = value; } else { width = value; }
+    notifyListeners();
+  }
+  void toggleShapeDetection() { detectShapes = !detectShapes; notifyListeners(); }
 
   void addStroke(InkStroke stroke) => execute(StrokeChange(added: [stroke]));
 
