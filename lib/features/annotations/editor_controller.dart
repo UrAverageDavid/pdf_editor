@@ -74,12 +74,10 @@ class EditorController extends ChangeNotifier {
     if (document.selectedPenId == id) document.selectedPenId = document.penPresets.first.id;
     _changed();
   }
-  int highlighterColor = 0xffffd740;
-  double highlighterWidth = 16;
   bool detectShapes = false;
-  bool get highlighting => tool == EditorTool.highlighter;
-  int get activeColor => highlighting ? highlighterColor : color;
-  double get activeWidth => highlighting ? highlighterWidth : width;
+  bool get highlighting => tool == EditorTool.pen && penStyle.type == PenType.highlighter;
+  int get activeColor => color;
+  double get activeWidth => width;
   bool get canUndo => _undo.isNotEmpty;
   bool get canRedo => _redo.isNotEmpty;
   bool get isDirty => _revision != _savedRevision;
@@ -90,13 +88,22 @@ class EditorController extends ChangeNotifier {
 
   void setTool(EditorTool value) { tool = value; notifyListeners(); }
   void setColor(int value) {
-    if (highlighting) { highlighterColor = value; }
-    else { tool = EditorTool.pen; updatePen(selectedPen.copyWith(color: value)); return; }
-    notifyListeners();
+    tool = EditorTool.pen;
+    updatePen(selectedPen.copyWith(color: value));
   }
-  void setWidth(double value) {
-    if (highlighting) { highlighterWidth = value; } else { updatePen(selectedPen.copyWith(width: value)); return; }
-    notifyListeners();
+  void setWidth(double value) => updatePen(selectedPen.copyWith(width: value));
+
+  /// The marker shortcut selects a saved preset, including in older documents.
+  void selectHighlighter() {
+    if (highlighting) return;
+    final existing = penPresets.where((p) => p.style.type == PenType.highlighter).firstOrNull;
+    if (existing != null) { selectPen(existing.id); return; }
+    final preset = PenPreset.highlighter;
+    final id = document.penPresets.any((p) => p.id == preset.id)
+      ? 'highlighter-${DateTime.now().microsecondsSinceEpoch}' : preset.id;
+    document.penPresets.add(PenPreset(id: id, name: preset.name,
+      width: preset.width, color: preset.color, style: preset.style));
+    selectPen(id);
   }
   void toggleShapeDetection() { detectShapes = !detectShapes; notifyListeners(); }
 

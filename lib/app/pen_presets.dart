@@ -13,6 +13,7 @@ IconData _penIcon(PenType type) => switch (type) {
   PenType.fountain => Icons.draw_outlined,
   PenType.ball => Icons.edit_outlined,
   PenType.brush => Icons.brush_outlined,
+  PenType.highlighter => Icons.border_color_outlined,
 };
 
 const penMenuStyle = MenuStyle(
@@ -134,13 +135,14 @@ class _PresetButtonState extends State<_PresetButton> {
       ],
       builder: (context, controller, child) => Tooltip(
         message:
-            '${preset.name} · ${preset.style.type.label}\nSelect pen; tap again for settings',
+            '${preset.name} · ${preset.style.type.label} · ${_sizeLabel(preset.width)} pt\nSelect pen; tap again for settings',
         child: Semantics(
           selected: selected,
-          child: TextButton(
+          child: IconButton(
             key: ValueKey('pen-preset-${preset.id}'),
-            style: TextButton.styleFrom(
-              minimumSize: const Size(68, 44),
+            style: IconButton.styleFrom(
+              minimumSize: const Size(44, 44),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               padding: const EdgeInsets.symmetric(horizontal: 8),
               backgroundColor: selected
                   ? const Color(0xffd9f0f3)
@@ -156,41 +158,10 @@ class _PresetButtonState extends State<_PresetButton> {
                 controller.isOpen ? controller.close() : _open();
               }
             },
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  _penIcon(preset.style.type),
-                  size: 22,
-                  color: Color(preset.color),
-                ),
-                const SizedBox(width: 4),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 72),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        preset.name,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: Color(0xff253447),
-                        ),
-                      ),
-                      Text(
-                        '${_sizeLabel(preset.width)} pt',
-                        style: const TextStyle(
-                          fontSize: 10,
-                          color: Color(0xff667383),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Icon(Icons.expand_more, size: 14),
-              ],
+            icon: Icon(
+              _penIcon(preset.style.type),
+              size: 24,
+              color: Color(preset.color),
             ),
           ),
         ),
@@ -230,8 +201,21 @@ class _PenSettingsState extends State<PenSettings> {
 
   void _style({PenType? type, double? pressure, double? sharpness}) {
     final old = _preset.style;
+    final nextType = type ?? old.type;
+    var width = _preset.width;
+    if (nextType != old.type &&
+        (width < nextType.minWidth || width > nextType.maxWidth)) {
+      width = nextType == PenType.highlighter ? 16 : 2.2;
+    }
+    if (nextType != old.type) {
+      setState(() {
+        _widthError = null;
+        _width.text = _sizeLabel(width);
+      });
+    }
     _update(
       _preset.copyWith(
+        width: width,
         style: PenStyle(
           type: type ?? old.type,
           pressureSensitivity: pressure ?? old.pressureSensitivity,
@@ -280,6 +264,9 @@ class _PenSettingsState extends State<PenSettings> {
     listenable: widget.editor,
     builder: (context, _) {
       final preset = _preset;
+      final highlighting = preset.style.type == PenType.highlighter;
+      final minWidth = preset.style.type.minWidth;
+      final maxWidth = preset.style.type.maxWidth;
       final available = MediaQuery.sizeOf(context);
       return SizedBox(
         key: const ValueKey('pen-settings-popover'),
@@ -351,43 +338,86 @@ class _PenSettingsState extends State<PenSettings> {
                         },
                       ),
                       const SizedBox(height: 14),
-                      Row(
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
                         children: [
                           for (final type in PenType.values)
-                            Expanded(
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 2,
+                            SizedBox(
+                              width: 131,
+                              child: TextButton.icon(
+                                key: ValueKey('pen-type-${type.name}'),
+                                style: TextButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 10,
+                                  ),
+                                  backgroundColor: preset.style.type == type
+                                      ? const Color(0xffd9f0f3)
+                                      : Colors.white,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
                                 ),
-                                child: TextButton(
-                                  style: TextButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 8,
-                                    ),
-                                    backgroundColor: preset.style.type == type
-                                        ? const Color(0xffd9f0f3)
-                                        : Colors.white,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                  ),
-                                  onPressed: () => _style(type: type),
-                                  child: Column(
-                                    children: [
-                                      Icon(_penIcon(type), size: 24),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        type.label.split(' ').first,
-                                        style: const TextStyle(fontSize: 11),
-                                      ),
-                                    ],
-                                  ),
+                                onPressed: () => _style(type: type),
+                                icon: Icon(_penIcon(type), size: 22),
+                                label: Text(
+                                  type.label,
+                                  style: const TextStyle(fontSize: 11),
                                 ),
                               ),
                             ),
                         ],
                       ),
-                      const SizedBox(height: 14),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 4,
+                        children: [
+                          for (final entry in const {
+                            0xff242c35: 'black',
+                            0xff2947c7: 'blue',
+                            0xffb34a3e: 'red',
+                            0xff39755b: 'green',
+                            0xffffd740: 'yellow',
+                            0xff69f0ae: 'mint',
+                            0xff40c4ff: 'cyan',
+                            0xffff80ab: 'pink',
+                          }.entries)
+                            Semantics(
+                              selected: preset.color == entry.key,
+                              child: IconButton(
+                                tooltip: 'Choose ${entry.value} ink',
+                                onPressed: () =>
+                                    _update(_preset.copyWith(color: entry.key)),
+                                icon: Container(
+                                  width: 24,
+                                  height: 24,
+                                  decoration: BoxDecoration(
+                                    color: Color(entry.key),
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: const Color(0xffb8c5d0),
+                                    ),
+                                  ),
+                                  child: preset.color == entry.key
+                                      ? Icon(
+                                          Icons.check,
+                                          size: 16,
+                                          color:
+                                              entry.key == 0xff242c35 ||
+                                                  entry.key == 0xff2947c7 ||
+                                                  entry.key == 0xffb34a3e ||
+                                                  entry.key == 0xff39755b
+                                              ? Colors.white
+                                              : const Color(0xff253447),
+                                        )
+                                      : null,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
                       TextField(
                         key: const ValueKey('tip-size-input'),
                         controller: _width,
@@ -408,10 +438,12 @@ class _PenSettingsState extends State<PenSettings> {
                           final valid =
                               value != null &&
                               value.isFinite &&
-                              value >= .1 &&
-                              value <= 8;
+                              value >= minWidth &&
+                              value <= maxWidth;
                           setState(
-                            () => _widthError = valid ? null : 'Enter 0.1–8 pt',
+                            () => _widthError = valid
+                                ? null
+                                : 'Enter ${_sizeLabel(minWidth)}–${_sizeLabel(maxWidth)} pt',
                           );
                           if (valid) _update(_preset.copyWith(width: value));
                         },
@@ -419,9 +451,9 @@ class _PenSettingsState extends State<PenSettings> {
                       Slider(
                         key: const ValueKey('pen-size-slider'),
                         value: preset.width,
-                        min: .1,
-                        max: 8,
-                        divisions: 158,
+                        min: minWidth,
+                        max: maxWidth,
+                        divisions: highlighting ? 34 : 158,
                         semanticFormatterCallback: (v) =>
                             '${_sizeLabel(v)} points',
                         onChanged: (value) {
@@ -433,18 +465,20 @@ class _PenSettingsState extends State<PenSettings> {
                           _update(_preset.copyWith(width: width));
                         },
                       ),
-                      _slider(
-                        'TIP SHARPNESS',
-                        'tip-sharpness',
-                        preset.style.tipSharpness,
-                        (value) => _style(sharpness: value),
-                      ),
-                      _slider(
-                        'PRESSURE SENSITIVITY',
-                        'pressure-sensitivity',
-                        preset.style.pressureSensitivity,
-                        (value) => _style(pressure: value),
-                      ),
+                      if (!highlighting)
+                        _slider(
+                          'TIP SHARPNESS',
+                          'tip-sharpness',
+                          preset.style.tipSharpness,
+                          (value) => _style(sharpness: value),
+                        ),
+                      if (!highlighting)
+                        _slider(
+                          'PRESSURE SENSITIVITY',
+                          'pressure-sensitivity',
+                          preset.style.pressureSensitivity,
+                          (value) => _style(pressure: value),
+                        ),
                       Row(
                         children: [
                           const Expanded(
@@ -499,7 +533,7 @@ class _PenPreview extends CustomPainter {
       canvas,
       size,
       points,
-      preset.width * 2,
+      preset.width * (preset.style.type == PenType.highlighter ? 1 : 2),
       Color(preset.color),
       penStyle: preset.style,
     );

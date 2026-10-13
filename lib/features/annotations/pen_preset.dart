@@ -1,10 +1,13 @@
-enum PenType { fountain, ball, brush }
+enum PenType { fountain, ball, brush, highlighter }
 
 extension PenTypeLabel on PenType {
+  double get minWidth => this == PenType.highlighter ? 6 : .1;
+  double get maxWidth => this == PenType.highlighter ? 40 : 8;
   String get label => switch (this) {
     PenType.fountain => 'Fountain Pen',
     PenType.ball => 'Ball Pen',
     PenType.brush => 'Brush Pen',
+    PenType.highlighter => 'Highlighter',
   };
 }
 
@@ -85,11 +88,12 @@ class PenPreset {
 
   factory PenPreset.fromJson(Map<String, dynamic> json) {
     final width = (json['width'] as num).toDouble();
+    final style = PenStyle.fromJson(json['style'] as Map<String, dynamic>);
     final id = json['id'] as String;
     final name = json['name'] as String;
     if (!width.isFinite ||
-        width < .1 ||
-        width > 8 ||
+        width < style.type.minWidth ||
+        width > style.type.maxWidth ||
         id.isEmpty ||
         name.trim().isEmpty) {
       throw const FormatException('Invalid pen preset');
@@ -99,12 +103,21 @@ class PenPreset {
       name: name,
       width: width,
       color: json['color'] as int,
-      style: PenStyle.fromJson(json['style'] as Map<String, dynamic>),
+      style: style,
     );
   }
 
+  static const highlighter = PenPreset(
+    id: 'highlighter',
+    name: 'Highlight',
+    width: 16,
+    color: 0xffffd740,
+    style: PenStyle(type: PenType.highlighter),
+  );
+
   static const defaults = [
     PenPreset(id: 'fountain', name: 'Fountain', width: 2.2),
+    highlighter,
     PenPreset(
       id: 'ball',
       name: 'Fine ball',

@@ -77,23 +77,25 @@ Open a PDF or choose **Try the practice document**. Pen and left mouse drag draw
 creates ink: one finger pans and two fingers zoom. Select Hand to pan with a mouse.
 The eraser removes whole strokes; one eraser gesture is one undo step.
 
-Select **Highlighter (M)** for translucent marks. Choose yellow, mint, cyan, or pink
-and a stroke-width preview; switching back to Pen restores its color and width.
+The drawing palette shows one colored icon per preset, with Fountain, Highlighter,
+Fine ball, and Brush presets to start. Hover an icon to see its name, type, and size.
+Tap it to select it; tap the selected icon again to open its compact settings popover.
+Use **+** to copy the current pen into a new preset. Choose its name, pen type, color,
+and size in the popover. Fountain, Ball, and Brush also offer pressure sensitivity
+and tip sharpness. Valid edits save automatically with the document; editing or
+deleting a preset leaves existing strokes unchanged.
+
+Highlighter is a pen type, so you can create several highlighter presets with their
+own colors and widths. **M** selects an existing highlighter preset, or creates one
+for a document that has none; **P** resumes the selected preset after Hand or Eraser.
 Highlight opacity stays uniform within a stroke, even when retraced. Separate
 overlapping highlights build up color. Highlights save, erase, and undo like pen ink.
 
-The drawing palette includes Fountain, Fine ball, and Brush pen presets. Tap a preset
-to select it; tap the selected preset again to open a compact settings popover underneath.
-Use **+** to copy the current pen into a new preset. Name it and choose Fountain, Ball,
-or Brush, an exact tip size, pressure sensitivity, and tip sharpness. The stroke preview
-updates live and valid edits save automatically with the document, including each
-preset's color. Editing or deleting a preset leaves existing strokes unchanged.
-
 Pen tips range from **0.10–8 pt**, with a slider in 0.05 pt steps. Highlighter widths
-range from **6–40 pt** and have their own anchored width picker. Close a popover with
-its close button (pen settings), Escape, or a tap outside. On narrow windows, swipe or
-scroll the palette sideways to reach every control; settings scroll on shorter screens.
-Document and writing-space controls sit in the blue top bar; undo/redo stay beside the palette.
+range from **6–40 pt**. Close settings with the close button, Escape, or a tap outside.
+On narrow windows, swipe or scroll the palette sideways to reach every control;
+settings scroll on shorter screens. Document and writing-space controls sit in the
+blue top bar; undo/redo stay beside the palette.
 
 Enable **Detect shapes (S)** to tidy pen strokes on lift. It starts off so normal
 handwriting stays freehand. Draw a line, rectangle/square (including rotated ones),

@@ -143,7 +143,7 @@ class EditorScreenState extends State<EditorScreen> {
           if (value == 'about') showAboutDialog(context: context, applicationName: 'Papertrail',
             applicationVersion: 'Prototype 0.1', children: [const Text(
               'Pen or mouse draws. Touch scrolls and pinches to zoom. '
-              'P: pen, M: highlighter, E: eraser, H: hand, S: shape detection.\n\n'
+              'P: selected preset, M: highlighter preset, E: eraser, H: hand, S: shape detection.\n\n'
               'Notes save locally and reopen automatically. Annotated PDF export, high-resolution tiles, '
               'and Surface hardware tuning are next milestones.')]);
         }, itemBuilder: (_) => [
@@ -165,7 +165,7 @@ class EditorScreenState extends State<EditorScreen> {
     const SingleActivator(LogicalKeyboardKey.keyO, control: true): widget.onOpen,
     const SingleActivator(LogicalKeyboardKey.keyO, meta: true): widget.onOpen,
     const SingleActivator(LogicalKeyboardKey.keyP): () => _tool(EditorTool.pen),
-    const SingleActivator(LogicalKeyboardKey.keyM): () => _tool(EditorTool.highlighter),
+    const SingleActivator(LogicalKeyboardKey.keyM): () { finishInput(); editor.selectHighlighter(); },
     const SingleActivator(LogicalKeyboardKey.keyS): () { finishInput(); editor.toggleShapeDetection(); },
     const SingleActivator(LogicalKeyboardKey.keyE): () => _tool(EditorTool.eraser),
     const SingleActivator(LogicalKeyboardKey.keyH): () => _tool(EditorTool.hand),

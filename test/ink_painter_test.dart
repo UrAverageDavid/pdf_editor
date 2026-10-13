@@ -23,7 +23,7 @@ Future<int> inkCoverage(PenStyle style, double pressure) async {
 
 void main() {
   test('pen styles and sharpness change painted ink; zero sensitivity ignores pressure', () async {
-    for (final type in PenType.values) {
+    for (final type in PenType.values.where((type) => type != PenType.highlighter)) {
       final insensitive = PenStyle(type: type, pressureSensitivity: 0, tipSharpness: 0);
       expect(await inkCoverage(insensitive, .2), await inkCoverage(insensitive, .9));
       final sensitive = PenStyle(type: type, pressureSensitivity: 1, tipSharpness: 0);
@@ -32,10 +32,20 @@ void main() {
       expect(await inkCoverage(sharp, .75), lessThan(await inkCoverage(insensitive, .75)));
     }
     final coverage = <int>{};
-    for (final type in PenType.values) {
+    for (final type in PenType.values.where((type) => type != PenType.highlighter)) {
       coverage.add(await inkCoverage(PenStyle(type: type), .3));
     }
     expect(coverage, hasLength(3));
+  });
+
+  test('highlighter preset ignores pressure and sharpness and stays translucent', () async {
+    final low = await inkCoverage(const PenStyle(type: PenType.highlighter,
+      pressureSensitivity: 0, tipSharpness: 0), .1);
+    final high = await inkCoverage(const PenStyle(type: PenType.highlighter,
+      pressureSensitivity: 1, tipSharpness: 1), 1);
+    expect(low, high);
+    expect(high, lessThan(await inkCoverage(const PenStyle(type: PenType.ball,
+      pressureSensitivity: 0, tipSharpness: 0), 1) * .4));
   });
 
   test('highlighter remains translucent and uniform through retracing', () async {

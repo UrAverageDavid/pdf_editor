@@ -75,12 +75,119 @@ void main() {
       ..remove('selectedPenId');
     json['strokes'] = [stroke('legacy').toJson()];
     final loaded = AppDocument.fromJson(json, '/source.pdf');
-    expect(loaded.penPresets, hasLength(3));
+    expect(loaded.penPresets, hasLength(4));
     expect(loaded.annotations[0]!.single.penStyle, isNull);
     final malformed = loaded.toJson();
     (malformed['penPresets'] as List).first['style']['pressureSensitivity'] = 2;
     expect(() => AppDocument.fromJson(malformed, ''), throwsFormatException);
   });
+
+  test('marker shortcut creates a preset for older documents and preserves it on reopen', () async {
+    final document = sampleDocument();
+    document.penPresets.removeWhere((p) => p.style.type == PenType.highlighter);
+    final repository = MemoryRepository();
+    final editor = EditorController(document, repository);
+    editor.selectHighlighter();
+    final id = editor.selectedPen.id;
+    editor.setColor(0xffff80ab);
+    editor.setWidth(32);
+    editor.selectPen('fountain');
+    editor.selectHighlighter();
+    expect(editor.selectedPen.id, id);
+    expect(editor.color, 0xffff80ab);
+    expect(editor.width, 32);
+    await editor.flush();
+    final restored = EditorController(
+      AppDocument.fromJson(repository.saves.last, ''),
+      repository,
+    );
+    expect(restored.highlighting, isTrue);
+    expect(restored.selectedPen.toJson(), editor.selectedPen.toJson());
+    restored.dispose();
+    editor.dispose();
+  });
+
+  testWidgets(
+    'highlighter presets use colored icons and the shared type and color settings',
+    (tester) async {
+      tester.view.physicalSize = const Size(1000, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final repository = MemoryRepository();
+      final editor = EditorController(sampleDocument(), repository);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topCenter,
+              child: AnnotationToolbar(editor: editor, finishInput: () {}),
+            ),
+          ),
+        ),
+      );
+      expect(find.byTooltip('Highlighter (M)'), findsNothing);
+      expect(find.byType(Text), findsNothing);
+      for (final preset in editor.penPresets) {
+        final icon = tester.widget<Icon>(
+          find.descendant(
+            of: find.byKey(ValueKey('pen-preset-${preset.id}')),
+            matching: find.byType(Icon),
+          ),
+        );
+        expect(icon.color, Color(preset.color));
+      }
+      await tester.tap(find.byTooltip('Create pen preset'));
+      await tester.pumpAndSettle();
+      final id = editor.selectedPen.id;
+      await tester.tap(find.byKey(const ValueKey('pen-type-highlighter')));
+      await tester.pumpAndSettle();
+      expect(editor.highlighting, isTrue);
+      expect(editor.width, 16);
+      expect(find.byKey(const ValueKey('pressure-sensitivity')), findsNothing);
+      final pink = find.byTooltip('Choose pink ink');
+      await tester.ensureVisible(pink);
+      await tester.tap(pink);
+      final input = find.byKey(const ValueKey('tip-size-input'));
+      await tester.enterText(input, '41');
+      await tester.pump();
+      expect(find.text('Enter 6–40 pt'), findsOneWidget);
+      expect(editor.width, 16);
+      await tester.enterText(input, '32');
+      await tester.pump();
+      await tester.tap(find.byTooltip('Close pen settings'));
+      await tester.pumpAndSettle();
+      final icon = tester.widget<Icon>(
+        find.descendant(
+          of: find.byKey(ValueKey('pen-preset-$id')),
+          matching: find.byType(Icon),
+        ),
+      );
+      expect(icon.icon, Icons.border_color_outlined);
+      expect(icon.color, const Color(0xffff80ab));
+      expect(find.byType(Text), findsNothing);
+      await editor.flush();
+      final restored = AppDocument.fromJson(repository.saves.last, '');
+      final saved = restored.penPresets.firstWhere((p) => p.id == id);
+      expect(saved.style.type, PenType.highlighter);
+      expect(saved.width, 32);
+      expect(saved.color, 0xffff80ab);
+      await tester.tap(find.byKey(ValueKey('pen-preset-$id')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('pen-type-ball')));
+      await tester.pumpAndSettle();
+      expect(editor.highlighting, isFalse);
+      expect(editor.width, 2.2);
+      expect(
+        find.byKey(const ValueKey('pressure-sensitivity')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+      await editor.flush();
+      await tester.pumpWidget(const SizedBox.shrink());
+      editor.dispose();
+    },
+  );
 
   testWidgets(
     'create, customize, switch and delete a pen through its anchored menu',
@@ -103,7 +210,7 @@ void main() {
       await tester.tap(find.byTooltip('Create pen preset'));
       await tester.pumpAndSettle();
       final id = editor.selectedPen.id;
-      expect(editor.penPresets, hasLength(4));
+      expect(editor.penPresets, hasLength(5));
       expect(
         find.byKey(const ValueKey('pen-settings-popover')),
         findsOneWidget,
@@ -113,12 +220,13 @@ void main() {
         find.byKey(const ValueKey('preset-name')),
         'Sketch',
       );
-      await tester.tap(find.text('Brush').last);
+      await tester.tap(find.byKey(const ValueKey('pen-type-brush')));
       await tester.enterText(
         find.byKey(const ValueKey('tip-size-input')),
         '1.75',
       );
       final sharpness = find.byKey(const ValueKey('tip-sharpness'));
+      await tester.ensureVisible(sharpness);
       await tester.tapAt(tester.getTopLeft(sharpness) + const Offset(65, 24));
       final pressure = find.byKey(const ValueKey('pressure-sensitivity'));
       await tester.ensureVisible(pressure);
@@ -143,7 +251,7 @@ void main() {
       await tester.ensureVisible(find.byTooltip('Delete pen preset'));
       await tester.tap(find.byTooltip('Delete pen preset'));
       await tester.pumpAndSettle();
-      expect(editor.penPresets, hasLength(3));
+      expect(editor.penPresets, hasLength(4));
       expect(tester.takeException(), isNull);
       await editor.flush();
       await tester.pumpWidget(const SizedBox.shrink());

@@ -3,7 +3,7 @@ import 'dart:ui';
 
 import 'pen_preset.dart';
 
-enum EditorTool { pen, highlighter, eraser, hand }
+enum EditorTool { pen, eraser, hand }
 enum InkSurface { page, notes }
 enum InkKind { pen, highlighter }
 enum InkShape { freehand, line, arrow, rectangle, triangle, ellipse }

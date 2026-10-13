@@ -13,10 +13,11 @@ class StrokeSmoother {
       double width, Color color, {InkKind kind = InkKind.pen,
       InkShape shape = InkShape.freehand, PenStyle? penStyle}) {
     if (points.isEmpty) return;
-    if (kind == InkKind.highlighter || shape != InkShape.freehand) {
+    final highlighting = kind == InkKind.highlighter || penStyle?.type == PenType.highlighter;
+    if (highlighting || shape != InkShape.freehand) {
       // One path gives the marker uniform opacity, including self-overlaps.
       final paint = Paint()
-        ..color = kind == InkKind.highlighter ? color.withValues(alpha: .3) : color
+        ..color = highlighting ? color.withValues(alpha: .3) : color
         ..style = PaintingStyle.stroke
         ..strokeWidth = width
         ..strokeCap = StrokeCap.round
@@ -40,7 +41,7 @@ class StrokeSmoother {
       if (penStyle == null) return width * (.4 + p.pressure * .8);
       final style = penStyle;
       final response = switch (style.type) {
-        PenType.ball => .3, PenType.fountain => .8, PenType.brush => 1.3,
+        PenType.ball => .3, PenType.fountain => .8, PenType.brush => 1.3, PenType.highlighter => 0,
       };
       final pressure = 1 + (p.pressure - .75) * 2 * style.pressureSensitivity * response;
       var nib = 1.0;

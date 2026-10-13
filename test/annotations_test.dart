@@ -37,14 +37,15 @@ void main() {
 
   test('highlighter color and width stay separate from the pen', () {
     final editor = EditorController(sampleDocument(), MemoryRepository());
-    editor.setTool(EditorTool.highlighter);
+    editor.selectHighlighter();
     editor.setColor(0xffff80ab);
     editor.setWidth(24);
-    expect(editor.tool, EditorTool.highlighter);
-    editor.setTool(EditorTool.pen);
+    expect(editor.tool, EditorTool.pen);
+    expect(editor.highlighting, isTrue);
+    editor.selectPen('fountain');
     expect(editor.activeColor, 0xff2947c7);
     expect(editor.activeWidth, 2.2);
-    editor.setTool(EditorTool.highlighter);
+    editor.selectHighlighter();
     expect(editor.activeColor, 0xffff80ab);
     expect(editor.activeWidth, 24);
     editor.dispose();
