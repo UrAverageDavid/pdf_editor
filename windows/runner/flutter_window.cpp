@@ -29,6 +29,12 @@ bool FlutterWindow::OnCreate() {
   pen_haptics_ = std::make_unique<PenHaptics>(
       flutter_controller_->view()->GetNativeWindow(),
       flutter_controller_->engine()->messenger());
+  wet_ink_ = std::make_unique<WetInk>(
+      flutter_controller_->view()->GetNativeWindow(),
+      flutter_controller_->engine()->messenger(),
+      [this](std::function<void()> callback) {
+        flutter_controller_->engine()->SetNextFrameCallback(std::move(callback));
+      });
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
@@ -43,6 +49,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  wet_ink_.reset();
   pen_haptics_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
@@ -58,6 +65,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   if (message == WM_ACTIVATEAPP && !wparam && pen_haptics_) {
     pen_haptics_->Stop();
   }
+  if (message == WM_ACTIVATEAPP && !wparam && wet_ink_) wet_ink_->Cancel();
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

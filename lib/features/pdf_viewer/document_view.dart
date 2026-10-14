@@ -14,6 +14,7 @@ import '../annotations/ink_painter.dart';
 import '../annotations/ink_predictor.dart';
 import '../annotations/pen_haptics.dart';
 import '../annotations/shape_detector.dart';
+import '../annotations/windows_wet_ink.dart';
 import '../document/app_document.dart';
 import 'document_scrollbar.dart';
 import 'page_image.dart';
@@ -42,6 +43,7 @@ class DocumentViewState extends State<DocumentView>
   final _predictor = InkPredictor();
   Timer? _predictionExpiry;
   final _haptics = PenHaptics();
+  final _wetInk = WindowsWetInk();
   final _cursor = ValueNotifier<Offset?>(null);
   bool _detectShape = false;
   late final ScrollMotion _scroll;
@@ -68,6 +70,7 @@ class DocumentViewState extends State<DocumentView>
   @override
   void initState() {
     super.initState();
+    _wetInk.addListener(_wetInkChanged);
     _scroll = ScrollMotion(view, this);
     WidgetsBinding.instance.addObserver(this);
     GestureBinding.instance.pointerRouter.addGlobalRoute(_inputActivity);
@@ -75,6 +78,26 @@ class DocumentViewState extends State<DocumentView>
     _syncWritingAreas();
     view.addListener(_rebuild);
     widget.editor.addListener(_editorChanged);
+  }
+  void _wetInkChanged() {
+    if (!mounted) return;
+    _ink.nativePreview = _wetInk.visible;
+    if (_wetInk.visible) _cursor.value = null;
+    _ink.changed();
+  }
+
+  void _beginWetInk(PointerDownEvent event) {
+    final box = context.findRenderObject()! as RenderBox;
+    final origin = box.localToGlobal(Offset.zero);
+    final rect = view.screenRect(_ink.surface == InkSurface.page
+      ? view.layout.pages[_page!] : view.layout.notes[_page!]);
+    // Notes may grow during this gesture; allow the preview into that space.
+    final drawingRect = _ink.surface == InkSurface.notes
+      ? Rect.fromLTRB(rect.left, rect.top, view.size.width, rect.bottom) : rect;
+    final clip = drawingRect.intersect(Offset.zero & view.size).shift(origin);
+    unawaited(_wetInk.begin(position: event.position, clip: clip,
+      devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+      width: _ink.width * view.scale, color: _ink.color, style: _ink.penStyle!));
   }
   // Observe input across the editor, including toolbar menus and scrollbars.
   // These hooks only restart the idle timer; they never consume input or repaint.
@@ -146,7 +169,7 @@ class DocumentViewState extends State<DocumentView>
   bool _isPen(PointerEvent e) => e.kind == PointerDeviceKind.stylus ||
       e.kind == PointerDeviceKind.invertedStylus;
   void _updateCursor(PointerEvent e) {
-    _cursor.value = e.kind == PointerDeviceKind.mouse || e.kind == PointerDeviceKind.stylus
+    _cursor.value = !_wetInk.visible && (e.kind == PointerDeviceKind.mouse || e.kind == PointerDeviceKind.stylus)
       ? e.localPosition : null;
   }
   bool get _palmSuppressed => _pointer != null ||
@@ -195,6 +218,7 @@ class DocumentViewState extends State<DocumentView>
       _penInking = _isPen(e) && !_erasing;
       if (_penInking) unawaited(_haptics.start());
       _sample(e);
+      if (_penInking && _pointer != null) _beginWetInk(e);
     } else if (e.kind != PointerDeviceKind.touch || !_palmSuppressed) {
       _touches[e.pointer] = e.localPosition;
       if (_touches.length == 1) _scroll.begin(e.timeStamp);
@@ -296,6 +320,7 @@ class DocumentViewState extends State<DocumentView>
 
   /// Also used before focus loss, document switching, export, and normal exit.
   void finishInput({bool recognizeShape = false}) {
+    _wetInk.finish();
     _predictionExpiry?.cancel();
     _predictor.reset();
     _scroll.stop();
@@ -399,6 +424,8 @@ class DocumentViewState extends State<DocumentView>
 
   @override
   void dispose() {
+    _wetInk.removeListener(_wetInkChanged);
+    _wetInk.dispose();
     _predictionExpiry?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     GestureBinding.instance.pointerRouter.removeGlobalRoute(_inputActivity);

@@ -18,6 +18,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   ::RoInitialize(RO_INIT_SINGLETHREADED);
 
   flutter::DartProject project(L"data");
+  // Keep WM_POINTER dispatch and native wet ink responsive while Dart builds a
+  // frame. Flutter's default policy merges these threads in current SDKs.
+  project.set_ui_thread_policy(flutter::UIThreadPolicy::RunOnSeparateThread);
 
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();

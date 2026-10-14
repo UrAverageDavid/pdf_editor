@@ -90,7 +90,23 @@ and size in the popover. Fountain, Ball, and Brush also offer pressure sensitivi
 and tip sharpness. Valid edits save automatically with the document; editing or
 deleting a preset leaves existing strokes unchanged.
 
-During stylus input, a temporary predicted tip helps close the visible gap between
+On Windows builds, stylus contact uses a native Direct2D/DirectComposition wet-ink
+preview over the document. Native pointer messages (including coalesced pen history)
+update this surface directly, without a Dart round trip for every sample. The Windows
+runner explicitly keeps Dart UI work on a separate thread from native input dispatch.
+The preview supports the pen presets, pressure, page clipping, and translucent highlights;
+mouse drawing and erasing continue through Flutter. Flutter still collects the authoritative
+stroke samples for saving, undo, shape detection, and export. Native geometry follows the
+same filter and nib rules, but its denser input history can produce small differences at
+handoff. This is a custom native renderer, not a hosted Windows Ink `InkPresenter`.
+
+If native graphics initialization fails or a device is lost, drawing falls back to Flutter.
+The preview freezes on lift and is retired after the committed Flutter frame is submitted
+and a subsequent engine frame has been drawn. Gesture tokens keep old callbacks from
+clearing a newer stroke. Cancellation, focus loss, resize/DPI changes, and document disposal
+clear the native surface. Other platforms retain the existing Flutter renderer.
+
+With the Flutter renderer, a temporary predicted tip helps close the visible gap between
 the pen and the ink. Steady motion projects up to 15 ms ahead, capped at 24 logical
 screen pixels at every zoom. Turns, slowing, and unstable motion reduce prediction;
 resting for 32 ms without another sample removes it. Predictions are replaced on
@@ -264,10 +280,21 @@ The predictor uses our own conservative velocity extrapolation, informed by
 Microsoft documents a default 15 ms horizon that shrinks in less favorable conditions;
 it does not publish OneNote's exact prediction algorithm in that documentation.
 [Windows Ink also renders wet ink on a low-latency background thread](https://learn.microsoft.com/en-us/windows/uwp/ui-input/pen-and-stylus-interactions).
-This Flutter preview still uses Flutter's frame pipeline, so it does not reproduce
-that native path or guarantee OneNote-equivalent latency. Validate quick loops,
+The fallback Flutter preview uses Flutter's frame pipeline; the Windows native preview
+uses its own composition surface. Neither guarantees OneNote-equivalent latency. Validate quick loops,
 corners, stops, and pen lift on Surface in release mode; excessive prediction can
 cause temporary overshoot even though saved strokes remain accurate.
+
+Wet-ink bridge tests cover Windows-only activation, physical-coordinate conversion,
+native rejection/device failure, late replies, rapid successive strokes, disposal, and
+preservation of saved samples. These tests mock the native channel. The Windows C++
+renderer cannot be compiled or exercised on macOS: build with
+`flutter build windows --release` on Windows, then test a physical pen at 100%, 150%,
+and 200% display scaling. Check rapid dots, long strokes, brush/fountain pressure,
+highlighter retracing and lift (including opacity during handoff), page boundaries,
+growing writing space, zoom, Alt-Tab, window resize, and document switching. Compare
+input-to-display latency with the prior Flutter path on the same device. The explicit
+`RunOnSeparateThread` engine policy must be revisited if a future Flutter SDK removes it.
 
 ## Remaining MVP work
 

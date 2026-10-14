@@ -10,6 +10,7 @@ add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "main.cpp"
   "pen_haptics.cpp"
+  "wet_ink.cpp"
   "utils.cpp"
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
@@ -40,6 +41,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "windowsapp.lib" "comctl32.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "d3d11.lib" "d2d1.lib" "dcomp.lib" "dxgi.lib")
 
 # PenDevice.SimpleHapticsController is declared by the Windows 11 SDK.
 # Runtime capability checks keep Windows 10 and non-haptic pens supported.

@@ -53,6 +53,20 @@ Future<int> inkCoverage(PenStyle style, double pressure) async {
 }
 
 void main() {
+  test('native preview suppresses duplicate Flutter ink and can fall back mid-stroke', () async {
+    final ink = ActiveInk()..page = 0..nativePreview = true;
+    appendSamples(ink, 200);
+    final bytes = await rasterize((canvas) =>
+      ActiveInkPainter(ink, 0, 100).paint(canvas, const Size(100, 100)), const Size(100, 100));
+    expect(bytes.every((byte) => byte == 0), isTrue);
+    ink.nativePreview = false;
+    await expectLiveMatchesStored(ink, const Size(100, 100));
+    ink.nativePreview = true;
+    ink.clear();
+    expect(ink.nativePreview, isFalse);
+    ink.dispose();
+  });
+
   test('predictions replace and retract without entering cached geometry or darkening highlights', () async {
     for (final type in PenType.values) {
       final ink = ActiveInk()..page = 0..width = 4

@@ -110,6 +110,7 @@ class CommittedInkPainter extends CustomPainter {
 }
 
 class ActiveInk extends ChangeNotifier {
+  bool nativePreview = false;
   int? page;
   InkSurface surface = InkSurface.page;
   double width = 2;
@@ -121,7 +122,7 @@ class ActiveInk extends ChangeNotifier {
   List<InkPoint> prediction = const [];
   final _renderer = _LiveStrokeRenderer();
   void changed() => notifyListeners();
-  void clear() { page = null; points.clear(); prediction = const []; _renderer.reset(); notifyListeners(); }
+  void clear() { page = null; nativePreview = false; points.clear(); prediction = const []; _renderer.reset(); notifyListeners(); }
   @override
   void dispose() { _renderer.reset(); super.dispose(); }
 }
@@ -138,7 +139,7 @@ class ActiveInkPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final reference = referenceSize ?? size;
-    if (ink.page == page && ink.surface == surface) ink._renderer.paint(canvas, reference, ink.points,
+    if (!ink.nativePreview && ink.page == page && ink.surface == surface) ink._renderer.paint(canvas, reference, ink.points,
         ink.width * reference.width / pageWidth, Color(ink.color), kind: ink.kind,
         penStyle: ink.penStyle, prediction: ink.prediction);
   }

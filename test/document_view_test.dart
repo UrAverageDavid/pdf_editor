@@ -41,6 +41,64 @@ class FakePdf implements PdfDocumentHandle {
 }
 
 void main() {
+  for (final nativeAccepted in [true, false]) {
+    testWidgets('Windows wet ink preserves saved samples (accepted: $nativeAccepted)', (tester) async {
+      const channel = MethodChannel('papertrail/wet_ink');
+      final calls = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return call.method == 'begin' ? nativeAccepted : null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+      final renders = RenderService(FakePdf());
+      final editor = EditorController(sampleDocument(), MemoryRepository());
+      final viewport = ViewportController(renders.document.pageSizes);
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: Padding(
+        padding: const EdgeInsets.only(left: 30, top: 50),
+        child: DocumentView(editor: editor, renders: renders, viewport: viewport)))));
+      await tester.pumpAndSettle();
+      final ink = tester.widgetList<CustomPaint>(find.byType(CustomPaint))
+        .map((p) => p.painter).whereType<ActiveInkPainter>().first.ink;
+      final pen = await tester.startGesture(const Offset(200, 150), kind: PointerDeviceKind.stylus);
+      await tester.pump();
+      expect(ink.nativePreview, nativeAccepted);
+      final args = calls.singleWhere((c) => c.method == 'begin').arguments as Map;
+      final dpr = tester.view.devicePixelRatio;
+      expect(args['x'], 200 * dpr);
+      expect(args['y'], 150 * dpr);
+      expect((args['clip'] as List)[1], greaterThanOrEqualTo(50 * dpr));
+      for (var i = 1; i <= 10; i++) {
+        await pen.moveTo(Offset(200 + i * 3, 150 + i * 2),
+          timeStamp: Duration(milliseconds: i * 8));
+      }
+      expect(ink.points.length, greaterThan(5));
+      final observed = List<InkPoint>.of(ink.points);
+      await pen.up();
+      await tester.pump();
+      expect(ink.nativePreview, isFalse);
+      final saved = editor.strokes(0).single;
+      expect(saved.points.take(observed.length), orderedEquals(observed));
+      expect(calls.where((c) => c.method == 'begin'), hasLength(1));
+      expect(calls.where((c) => c.method == 'freeze'), hasLength(1));
+      expect(calls.where((c) => c.method == 'retire'), hasLength(1));
+      final beginCount = calls.where((c) => c.method == 'begin').length;
+      final mouse = await tester.startGesture(const Offset(250, 200), kind: PointerDeviceKind.mouse);
+      await mouse.up();
+      editor.setTool(EditorTool.eraser);
+      final eraser = await tester.startGesture(const Offset(250, 200), kind: PointerDeviceKind.stylus);
+      await eraser.up();
+      editor.setTool(EditorTool.hand);
+      final hand = await tester.startGesture(const Offset(250, 200), kind: PointerDeviceKind.stylus);
+      await hand.up();
+      expect(calls.where((c) => c.method == 'begin'), hasLength(beginCount));
+      await editor.flush();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await renders.close();
+      viewport.dispose();
+      editor.dispose();
+    }, variant: TargetPlatformVariant({TargetPlatform.windows}));
+  }
+
   testWidgets('stylus prediction expires while held and never enters saved strokes', (tester) async {
     final renders = RenderService(FakePdf());
     final repository = MemoryRepository();
