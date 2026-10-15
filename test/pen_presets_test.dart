@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:papertrail/app/annotation_toolbar.dart';
@@ -14,7 +15,7 @@ import 'helpers.dart';
 void main() {
   final binding = _SemanticsRecordingBinding();
   testWidgets(
-    'sliders preview locally, commit on release, and remain accessible',
+    'preset hover and slider edits keep accessibility nodes connected',
     (tester) async {
       binding.recordUpdates = true;
       binding.children.clear();
@@ -48,8 +49,35 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: const Offset(1390, 990));
+      for (final key in ['fountain', 'ball', 'brush', 'fountain']) {
+        await mouse.moveTo(
+          tester.getCenter(find.byKey(ValueKey('pen-preset-$key'))),
+        );
+        await tester.pump(const Duration(milliseconds: 600));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(
+        binding.orphans,
+        isEmpty,
+        reason: 'Hovering preset tooltips must not lose their menu anchor',
+      );
       await tester.tap(find.byKey(const ValueKey('pen-preset-fountain')));
       await tester.pumpAndSettle();
+      for (final color in ['black', 'blue', 'red']) {
+        final swatch = find.byTooltip('Choose $color ink');
+        await tester.ensureVisible(swatch);
+        await mouse.moveTo(tester.getCenter(swatch));
+        await tester.pump(const Duration(milliseconds: 600));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(
+        binding.orphans,
+        isEmpty,
+        reason:
+            'Settings tooltips must stay connected during hover transitions',
+      );
 
       final values = <String, double Function()>{
         'pen-size-slider': () => editor.width,
@@ -64,6 +92,7 @@ void main() {
         finishedInputs = 0;
         final before = entry.value();
         final rect = tester.getRect(finder);
+        await mouse.moveTo(rect.center);
         final gesture = await tester.startGesture(
           Offset(rect.left + rect.width * .3, rect.center.dy),
         );
@@ -129,12 +158,14 @@ void main() {
       final restored = AppDocument.fromJson(repository.saves.last, '');
       expect(restored.penPresets.first.toJson(), editor.selectedPen.toJson());
       expect(tester.takeException(), isNull);
+      expect(binding.children, contains(0));
       expect(
         binding.orphans,
         isEmpty,
         reason: 'Every serialized accessibility node must connect to the root',
       );
       await tester.pumpWidget(const SizedBox.shrink());
+      await mouse.removePointer();
       editor.dispose();
       semantics.dispose();
     },

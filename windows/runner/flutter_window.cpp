@@ -1,8 +1,27 @@
 #include "flutter_window.h"
 
+#include <tpcshrd.h>
+
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+
+namespace {
+
+constexpr wchar_t kTabletPenServiceProperty[] =
+    L"MicrosoftTabletPenServiceProperty";
+
+bool DisablePenPressAndHold(HWND window) {
+  // Keep any existing tablet settings and opt this HWND out of Windows'
+  // press-and-hold right-click recognition before the first pen contact.
+  const auto flags = reinterpret_cast<ULONG_PTR>(
+      GetPropW(window, kTabletPenServiceProperty));
+  return SetPropW(
+             window, kTabletPenServiceProperty,
+             reinterpret_cast<HANDLE>(flags | TABLET_DISABLE_PRESSANDHOLD)) != 0;
+}
+
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -22,6 +41,12 @@ bool FlutterWindow::OnCreate() {
       frame.right - frame.left, frame.bottom - frame.top, project_);
   // Ensure that basic setup of the controller was successful.
   if (!flutter_controller_->engine() || !flutter_controller_->view()) {
+    return false;
+  }
+  // Tablet settings are per HWND: the Flutter child receives pen input, while
+  // the top-level window hosts the rest of the app's native window surface.
+  if (!DisablePenPressAndHold(GetHandle()) ||
+      !DisablePenPressAndHold(flutter_controller_->view()->GetNativeWindow())) {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
@@ -52,8 +77,13 @@ void FlutterWindow::OnDestroy() {
   wet_ink_.reset();
   pen_haptics_.reset();
   if (flutter_controller_) {
+    if (flutter_controller_->view()) {
+      RemovePropW(flutter_controller_->view()->GetNativeWindow(),
+                  kTabletPenServiceProperty);
+    }
     flutter_controller_ = nullptr;
   }
+  if (GetHandle()) RemovePropW(GetHandle(), kTabletPenServiceProperty);
 
   Win32Window::OnDestroy();
 }
@@ -62,6 +92,8 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // Win32Window clears its HWND before invoking OnDestroy for WM_DESTROY.
+  if (message == WM_DESTROY) RemovePropW(hwnd, kTabletPenServiceProperty);
   if (message == WM_ACTIVATEAPP && !wparam && pen_haptics_) {
     pen_haptics_->Stop();
   }

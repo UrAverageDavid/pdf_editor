@@ -133,35 +133,40 @@ class _PresetButtonState extends State<_PresetButton> {
           maxHeight: _availableHeight,
         ),
       ],
-      builder: (context, controller, child) => Tooltip(
-        message:
-            '${preset.name} · ${preset.style.type.label} · ${_sizeLabel(preset.width)} pt\nSelect pen; tap again for settings',
-        child: Semantics(
-          selected: selected,
-          child: IconButton(
-            key: ValueKey('pen-preset-${preset.id}'),
-            style: IconButton.styleFrom(
-              minimumSize: const Size(44, 44),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              backgroundColor: selected
-                  ? const Color(0xffd9f0f3)
-                  : Colors.transparent,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+      builder: (context, controller, child) => Semantics(
+        // The menu and tooltip each anchor an overlay. Give the tooltip its
+        // own node so Flutter cannot merge away either traversal parent.
+        container: true,
+        child: Tooltip(
+          message:
+              '${preset.name} · ${preset.style.type.label} · ${_sizeLabel(preset.width)} pt\nSelect pen; tap again for settings',
+          child: Semantics(
+            selected: selected,
+            child: IconButton(
+              key: ValueKey('pen-preset-${preset.id}'),
+              style: IconButton.styleFrom(
+                minimumSize: const Size(44, 44),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                backgroundColor: selected
+                    ? const Color(0xffd9f0f3)
+                    : Colors.transparent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
-            ),
-            onPressed: () {
-              widget.finishInput();
-              widget.editor.selectPen(preset.id);
-              if (selected) {
-                controller.isOpen ? controller.close() : _open();
-              }
-            },
-            icon: Icon(
-              _penIcon(preset.style.type),
-              size: 24,
-              color: Color(preset.color),
+              onPressed: () {
+                widget.finishInput();
+                widget.editor.selectPen(preset.id);
+                if (selected) {
+                  controller.isOpen ? controller.close() : _open();
+                }
+              },
+              icon: Icon(
+                _penIcon(preset.style.type),
+                size: 24,
+                color: Color(preset.color),
+              ),
             ),
           ),
         ),
