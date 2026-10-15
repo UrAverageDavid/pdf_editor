@@ -189,15 +189,44 @@ class PenSettings extends StatefulWidget {
 }
 
 class _PenSettingsState extends State<PenSettings> {
+  PenPreset? _draft;
+  bool _sliding = false;
   PenPreset get _preset =>
+      _draft ??
       widget.editor.penPresets.firstWhere((p) => p.id == widget.presetId);
   late final _name = TextEditingController(text: _preset.name);
   late final _width = TextEditingController(text: _sizeLabel(_preset.width));
   String? _widthError;
   void _update(PenPreset preset) {
+    if (_sliding) {
+      setState(() => _draft = preset);
+      return;
+    }
     widget.finishInput();
     widget.editor.updatePen(preset);
   }
+
+  void _startSlider(double _) {
+    widget.finishInput();
+    _sliding = true;
+  }
+
+  void _endSlider(double _) {
+    final draft = _draft;
+    setState(() {
+      _sliding = false;
+      _draft = null;
+    });
+    if (draft != null) widget.editor.updatePen(draft);
+  }
+
+  // Keep Slider's internal OverlayPortal in its own subtree. Sharing the
+  // menu's overlay can serialize orphan accessibility nodes (Flutter #190357).
+  Widget _sliderOverlay(Widget child) => Overlay.wrap(
+    alwaysSizeToContent: true,
+    clipBehavior: Clip.none,
+    child: child,
+  );
 
   void _style({PenType? type, double? pressure, double? sharpness}) {
     final old = _preset.style;
@@ -249,12 +278,16 @@ class _PenSettingsState extends State<PenSettings> {
           ),
         ],
       ),
-      Slider(
-        key: ValueKey(key),
-        value: value,
-        divisions: 100,
-        semanticFormatterCallback: (v) => '${(v * 100).round()}%',
-        onChanged: change,
+      _sliderOverlay(
+        Slider(
+          key: ValueKey(key),
+          value: value,
+          divisions: 100,
+          semanticFormatterCallback: (v) => '${(v * 100).round()}%',
+          onChanged: change,
+          onChangeStart: _startSlider,
+          onChangeEnd: _endSlider,
+        ),
       ),
     ],
   );
@@ -448,22 +481,28 @@ class _PenSettingsState extends State<PenSettings> {
                           if (valid) _update(_preset.copyWith(width: value));
                         },
                       ),
-                      Slider(
-                        key: const ValueKey('pen-size-slider'),
-                        value: preset.width,
-                        min: minWidth,
-                        max: maxWidth,
-                        divisions: highlighting ? 34 : 158,
-                        semanticFormatterCallback: (v) =>
-                            '${_sizeLabel(v)} points',
-                        onChanged: (value) {
-                          final width = double.parse(value.toStringAsFixed(2));
-                          setState(() {
-                            _widthError = null;
-                            _width.text = _sizeLabel(width);
-                          });
-                          _update(_preset.copyWith(width: width));
-                        },
+                      _sliderOverlay(
+                        Slider(
+                          key: const ValueKey('pen-size-slider'),
+                          value: preset.width,
+                          min: minWidth,
+                          max: maxWidth,
+                          divisions: highlighting ? 34 : 158,
+                          semanticFormatterCallback: (v) =>
+                              '${_sizeLabel(v)} points',
+                          onChanged: (value) {
+                            final width = double.parse(
+                              value.toStringAsFixed(2),
+                            );
+                            setState(() {
+                              _widthError = null;
+                              _width.text = _sizeLabel(width);
+                            });
+                            _update(_preset.copyWith(width: width));
+                          },
+                          onChangeStart: _startSlider,
+                          onChangeEnd: _endSlider,
+                        ),
                       ),
                       if (!highlighting)
                         _slider(
