@@ -41,6 +41,57 @@ class FakePdf implements PdfDocumentHandle {
 }
 
 void main() {
+  testWidgets('sustained note writing batches layout growth and fits exactly on release', (tester) async {
+    final renders = RenderService(FakePdf());
+    final repository = MemoryRepository();
+    final saved = sampleDocument();
+    saved.writingAreas[0] = const WritingArea(pattern: WritingPattern.grid);
+    final editor = EditorController(saved, repository);
+    final viewport = ViewportController(renders.document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    viewport.setZoom(.45);
+    viewport.revealWritingArea(0);
+    await tester.pumpAndSettle();
+    final initialNotes = viewport.screenRect(viewport.layout.notes[0]);
+    final initialPage = viewport.pageRect(0);
+    final start = Offset(initialNotes.right - 60, initialNotes.top + 100);
+    var layoutUpdates = 0;
+    viewport.addListener(() => layoutUpdates++);
+    final pen = await tester.startGesture(start, kind: PointerDeviceKind.stylus);
+    await tester.pump();
+    for (var i = 1; i <= 48; i++) {
+      final point = start + Offset(i * 3, i * .5);
+      await pen.moveTo(point, timeStamp: Duration(milliseconds: i * 16));
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(viewport.screenRect(viewport.layout.notes[0]).right - point.dx,
+        greaterThanOrEqualTo(40));
+      expect(viewport.pageRect(0), initialPage);
+    }
+    expect(layoutUpdates, lessThanOrEqualTo(3),
+      reason: 'Growing notes must not rebuild the document on every ink frame');
+    expect(editor.document.writingAreas[0]!.width, .5);
+    expect(repository.saves, isEmpty);
+    await pen.up();
+    await tester.pump();
+    final stroke = editor.strokes(0).single;
+    final right = stroke.points.fold<double>(0, (x, p) => p.x > x ? p.x : x) * 612 + stroke.width * .85;
+    expect(viewport.layout.notes[0].width * viewport.scale - right * viewport.scale,
+      closeTo(40, 1e-8));
+    expect(stroke.points.last.x, greaterThan(.5));
+    editor.undo();
+    expect(editor.document.writingAreas[0]!.width, .5);
+    expect(editor.strokes(0), isEmpty);
+    editor.redo();
+    await editor.flush();
+    expect(AppDocument.fromJson(repository.saves.last, '').annotations[0]!.single.toJson(), stroke.toJson());
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  });
+
   for (final nativeAccepted in [true, false]) {
     testWidgets('Windows wet ink preserves saved samples (accepted: $nativeAccepted)', (tester) async {
       const channel = MethodChannel('papertrail/wet_ink');

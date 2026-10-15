@@ -11,14 +11,28 @@ namespace {
 constexpr wchar_t kTabletPenServiceProperty[] =
     L"MicrosoftTabletPenServiceProperty";
 
-bool DisablePenPressAndHold(HWND window) {
+bool ConfigurePenInput(HWND window) {
   // Keep any existing tablet settings and opt this HWND out of Windows'
-  // press-and-hold right-click recognition before the first pen contact.
+  // press-and-hold recognition and legacy pen feedback before first contact.
   const auto flags = reinterpret_cast<ULONG_PTR>(
       GetPropW(window, kTabletPenServiceProperty));
+  // Modern Windows pen ripples are configured separately from tablet gestures.
+  // Apply this to both HWNDs without changing the user's system preferences.
+  const BOOL feedback_enabled = FALSE;
+  constexpr FEEDBACK_TYPE pen_feedback[] = {
+      FEEDBACK_PEN_TAP, FEEDBACK_PEN_DOUBLETAP, FEEDBACK_PEN_PRESSANDHOLD,
+      FEEDBACK_PEN_RIGHTTAP, FEEDBACK_PEN_BARRELVISUALIZATION};
+  for (const auto feedback : pen_feedback) {
+    if (!SetWindowFeedbackSetting(window, feedback, 0, sizeof(feedback_enabled),
+                                  &feedback_enabled)) {
+      OutputDebugStringW(L"Papertrail: could not disable Windows pen feedback.\n");
+    }
+  }
   return SetPropW(
              window, kTabletPenServiceProperty,
-             reinterpret_cast<HANDLE>(flags | TABLET_DISABLE_PRESSANDHOLD)) != 0;
+             reinterpret_cast<HANDLE>(flags | TABLET_DISABLE_PRESSANDHOLD |
+                                      TABLET_DISABLE_PENTAPFEEDBACK |
+                                      TABLET_DISABLE_PENBARRELFEEDBACK)) != 0;
 }
 
 }  // namespace
@@ -45,8 +59,8 @@ bool FlutterWindow::OnCreate() {
   }
   // Tablet settings are per HWND: the Flutter child receives pen input, while
   // the top-level window hosts the rest of the app's native window surface.
-  if (!DisablePenPressAndHold(GetHandle()) ||
-      !DisablePenPressAndHold(flutter_controller_->view()->GetNativeWindow())) {
+  if (!ConfigurePenInput(GetHandle()) ||
+      !ConfigurePenInput(flutter_controller_->view()->GetNativeWindow())) {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());

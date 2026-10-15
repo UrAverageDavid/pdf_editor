@@ -54,6 +54,9 @@ class DocumentViewState extends State<DocumentView>
   int? _page;
   double? _resizedWritingWidth;
   final _noteRightEdges = <String, double>{};
+  // Stored strokes are immutable. Cache normalized bounds without retaining
+  // deleted strokes, and reuse them across pen-downs and zoom changes.
+  final _noteMaxX = Expando<double>('note right bound');
   double _activeNotesRight = 0;
   double _committedNotesRight = 0;
   int? _resizeFrame;
@@ -210,7 +213,9 @@ class DocumentViewState extends State<DocumentView>
       if (_ink.surface == InkSurface.notes) {
         for (final stroke in widget.editor.strokes(page)) {
           if (stroke.surface == InkSurface.notes) {
-            _noteRightEdges[stroke.id] = _rightEdge(stroke.points, stroke.width, view.layout.pages[page].width);
+            final maxX = _noteMaxX[stroke] ??= stroke.points.fold<double>(
+              0, (right, point) => math.max(right, point.x));
+            _noteRightEdges[stroke.id] = maxX * view.layout.pages[page].width + stroke.width * .85;
           }
         }
       }
@@ -256,9 +261,18 @@ class DocumentViewState extends State<DocumentView>
     .fold<double>(0, (right, entry) => math.max(right, entry.value));
 
   void _fitWritingSpace(double activeRight, {bool immediate = false}) {
-    final width = math.max(WritingArea.minimumWidth,
+    var width = math.max(WritingArea.minimumWidth,
       (math.max(_existingNotesRight, activeRight) + widget.writingSpacePadding / view.scale) /
         view.layout.pages[_page!].width);
+    final previous = _resizedWritingWidth;
+    if (!immediate && previous != null) {
+      if (width <= previous) return;
+      // Reserve space in screen-sized steps, rather than relaying out every
+      // page and repainting all saved notes for each advancing pen sample.
+      // The initial fit and pen-up fit remain exact; coordinates stay fixed.
+      final step = 128 / view.scale / view.layout.pages[_page!].width;
+      width = previous + ((width - previous) / step).ceil() * step;
+    }
     if (_resizedWritingWidth == width) return;
     _resizedWritingWidth = width;
     if (immediate) { _syncWritingAreas(); return; }
