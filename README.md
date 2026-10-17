@@ -105,11 +105,14 @@ The preview freezes on lift and is retired after the committed Flutter frame is 
 and a subsequent engine frame has been drawn. Gesture tokens keep old callbacks from
 clearing a newer stroke. Cancellation, focus loss, resize/DPI changes, and document disposal
 clear the native surface. Other platforms retain the existing Flutter renderer.
+The Windows preview retains its graphics buffers between strokes, clearing their contents
+at each pen-down. Resize/DPI changes release the buffers; device failures also recreate
+the graphics device. Color and opacity are refreshed for each stroke.
 
-With the Flutter renderer, a temporary predicted tip helps close the visible gap between
+In both renderers, a temporary predicted tip helps close the visible gap between
 the pen and the ink. Steady motion projects up to 15 ms ahead, capped at 24 logical
 screen pixels at every zoom. Turns, slowing, and unstable motion reduce prediction;
-resting for 32 ms without another sample removes it. Predictions are replaced on
+resting without another sample schedules its removal after 32 ms. Predictions are replaced on
 each sample and removed on lift, cancellation, or focus loss. Only actual input
 is saved, recognized as shapes, erased, or used to size the writing space.
 
@@ -322,11 +325,16 @@ cause temporary overshoot even though saved strokes remain accurate.
 Wet-ink bridge tests cover Windows-only activation, physical-coordinate conversion,
 native rejection/device failure, late replies, rapid successive strokes, disposal, and
 preservation of saved samples. These tests mock the native channel. The Windows C++
-renderer cannot be compiled or exercised on macOS: build with
+predictor, preview sample isolation, and retraction bounds also have portable tests:
+`clang++ -std=c++20 -Wall -Wextra -Werror tool/native_ink_test.cpp -o /tmp/native_ink_test`
+then `/tmp/native_ink_test`. The Direct2D/DirectComposition renderer itself cannot be
+compiled or exercised on macOS: build with
 `flutter build windows --release` on Windows, then test a physical pen at 100%, 150%,
 and 200% display scaling. Check rapid dots, long strokes, brush/fountain pressure,
 highlighter retracing and lift (including opacity during handoff), page boundaries,
 growing writing space, zoom, Alt-Tab, window resize, and document switching. Compare
+successive strokes with different colors/presets to catch stale pixels from buffer reuse.
+Check that the predicted tip retracts on a pause, corner, and pen-up. Compare
 input-to-display latency with the prior Flutter path on the same device. The explicit
 `RunOnSeparateThread` engine policy must be revisited if a future Flutter SDK removes it.
 

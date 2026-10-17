@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include "ink_prediction.h"
+
 // A transient native ink surface above the Flutter child. WM_POINTER input and
 // DirectComposition commits stay on the Windows platform thread, independent of
 // Dart's UI/raster pipeline. This is a custom renderer, not an InkCanvas host.
@@ -27,15 +29,19 @@ class WetInk {
   void Cancel() noexcept;
 
  private:
-  struct Point { float x, y, pressure; double time; };
+  using Point = ink::Point;
   static LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
   bool Initialize();
+  bool EnsureBuffers(UINT width, UINT height);
+  void ReleaseBuffers() noexcept;
   bool Begin(const flutter::EncodableMap& args);
   void ReadPoints(UINT32 pointer, bool ending);
   void Append(Point point);
   bool Paint();
-  void Segment(ID2D1DeviceContext* context, size_t index);
-  float Width(size_t index) const;
+  void Segment(ID2D1DeviceContext* context, const ink::StrokeView& points, size_t index);
+  float Width(const ink::StrokeView& points, size_t index) const;
+  void ArmPredictionExpiry();
+  void Freeze();
   void Clear() noexcept;
   void Fail() noexcept;
   void Retire(int64_t token);
@@ -58,6 +64,9 @@ class WetInk {
   std::vector<Point> pending_;
   std::vector<Point> points_;
   Point raw_{};
+  ink::Predictor predictor_;
+  ink::Prediction prediction_, painted_prediction_;
+  ULONGLONG last_sample_arrival_ = 0;
   double vx_ = 0, vy_ = 0, fast_vx_ = 0, fast_vy_ = 0;
   size_t next_segment_ = 1;
   float width_ = 1, dpr_ = 1, sensitivity_ = 0, sharpness_ = 0;
@@ -73,6 +82,7 @@ class WetInk {
   Microsoft::WRL::ComPtr<IDCompositionDesktopDevice> composition_;
   Microsoft::WRL::ComPtr<IDCompositionTarget> target_;
   Microsoft::WRL::ComPtr<IDCompositionVisual2> visual_;
+  Microsoft::WRL::ComPtr<IDCompositionEffectGroup> opacity_;
   Microsoft::WRL::ComPtr<IDCompositionSurface> surface_;
 };
 
