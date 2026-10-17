@@ -1,7 +1,7 @@
 import '../document/app_document.dart';
 
-/// The next milestone implements standard PDF Ink annotations through this
-/// boundary. Editing never needs access to a PDF-writing dependency.
+/// Export a separate, shareable copy without changing the editable notebook.
 abstract interface class PdfExporter {
-  Future<void> exportAnnotatedPdf({required AppDocument document, required String outputPath});
+  Future<void> exportAnnotatedPdf({required AppDocument document, required String outputPath,
+    void Function(int completed, int total)? onProgress});
 }

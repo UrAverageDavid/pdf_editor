@@ -72,7 +72,7 @@ haptics still require a Windows build and Surface hardware validation.
 - Autosave after one second without input, serialized writes, checksum-verified generations, and recovery from a
   damaged newest generation. Save failures retain dirty state and show a retry banner.
 - Lazy thumbnails, page count, jump-to-page, and keyboard shortcuts.
-- Desktop annotation JSON backup through the document options menu. This is **not PDF export**.
+- Desktop annotated PDF export and annotation JSON backup through the document options menu.
 
 ## Use
 
@@ -179,7 +179,21 @@ support undo/redo and save locally, including hidden notes. A pen or eraser gest
 ends at the divider; start a new gesture to write on the other side.
 
 Writing space is stored alongside annotations; the source PDF stays unchanged.
-Annotation JSON backups include it. PDF export of these notes is not implemented.
+Annotation JSON backups include it.
+
+On Windows, macOS or Linux, use **Document options (...) > Export annotated PDF…**
+and choose a new filename. The export includes all current annotations and every saved
+writing space, including hidden and blank spaces. Each writing space becomes one page
+immediately after its attached PDF page, with the same displayed page dimensions and
+orientation. Narrow spaces keep their size and are centered; wide spaces shrink uniformly
+to fit one page. Paper patterns are exported as vector lines, and no PDF page is widened.
+
+Original PDF text and graphics remain intact/searchable. App handwriting is flattened into
+a transparent print-resolution image (216 dpi, capped at 8 million pixels and 8192 pixels
+per dimension); it is visible in other PDF readers but is not exported as editable PDF Ink
+annotations. Export does not use the lower-resolution scrolling cache. Your original PDF
+and editable Papertrail notes are unchanged. Existing files and paths inside the document
+library cannot be overwritten. Cancelling the save dialog leaves everything unchanged.
 
 | Action | Shortcut |
 | --- | --- |
@@ -231,7 +245,7 @@ lib/core/                        coordinate transforms, page layout, LRU cache
 lib/features/document/           document model, repository, import/recovery
 lib/features/annotations/        immutable strokes, history, autosave, painters
 lib/features/pdf_viewer/         PdfEngine, pdfrx adapter, viewport, render scheduler
-lib/features/export/             PdfExporter interface for the next milestone
+lib/features/export/             PDFium export, ink overlays, same-sized writing pages
 ```
 
 Only the PDF adapter imports pdfrx. Pointer samples repaint active ink locally; committed ink
@@ -240,7 +254,13 @@ signals, and display sizes are calculated independently of scroll offsets so mov
 does not invalidate its retained layers. Saved ink caches ordered groups of up to 32 strokes
 with a soft 4096-point limit (individual strokes remain whole for highlighter opacity).
 Edits replace affected groups, zoom replaces their screen-space geometry, and unmounting a
-surface releases its pictures. Thumbnail caches are separate from the main canvas.
+surface releases its pictures. Mounted saved-ink surfaces also retain a transparent raster
+image, so scrolling draws one image instead of replaying all stroke segments. Appending ink
+composites only new strokes onto the previous image; erasing, undo, and geometry changes
+rebuild the affected surface. Each image is capped at 2 million pixels (about 8 MiB in RGBA)
+and 4096 pixels per dimension, and is released on unmount. Very large/zoomed surfaces may
+therefore show softer ink; saved stroke coordinates remain unchanged. Rasterization failure
+falls back to vector ink. Thumbnail caches are separate from the main canvas.
 Writing-space backgrounds, borders and clips are retained as a single surface during
 scrolling, including when no ink is present. Only margins intersecting the viewport are
 mounted; PDF neighbour prefetch remains unchanged. The document surface has its own repaint
@@ -283,9 +303,11 @@ requires a Windows build and hardware validation; Flutter tests only mock its ch
 Use profile/release mode for frame-time and latency measurements.
 
 Run `flutter test tool/ink_render_benchmark_test.dart --reporter expanded` to measure
-Dart-side recording of long live strokes. This benchmark excludes GPU rendering,
-display refresh, and physical pen latency. Raster comparison tests check that the
-cached live renderer matches saved ink across cache boundaries and layout changes.
+Dart-side recording of long live strokes and saved-ink rasterization. The saved-ink case
+compares retained vector commands against a retained image and waits for image readback;
+it includes raster work but does not measure Windows presentation or physical pen latency.
+Pixel comparisons cover saved-ink opacity, edits, erasing, undo/redo, zoom, DPR, and expanded
+note coordinates. Scroll regressions verify reuse of the same PDF/note ink images.
 
 The predictor uses our own conservative velocity extrapolation, informed by
 [Windows Ink's adaptive prediction horizon](https://learn.microsoft.com/en-us/uwp/api/windows.ui.input.inking.inkmodelerattributes.predictiontime?view=winrt-26100).
@@ -313,8 +335,8 @@ input-to-display latency with the prior Flutter path on the same device. The exp
 This is the first working-slice implementation, **not the complete MVP**.
 
 1. Compile and run on Windows/Surface, validate ARM64 PDFium packaging, and fix integration issues.
-2. Implement `PdfExporter` with standard Ink annotations and appearance streams; validate
-   pressure, page rotation/crop boxes, output in external readers, and unchanged originals.
+2. Add editable standard PDF Ink annotations as an alternative to the current flattened
+   export, and validate the export/save dialog on Windows/Surface hardware.
 3. Add high-resolution tile rendering; this prototype caps whole-page resolution and may look
    soft at high zoom. The engine already exposes `renderTile`.
 4. Add password entry for protected PDFs; currently the open failure is reported without

@@ -111,7 +111,8 @@ class _CommittedInkState extends State<CommittedInk> {
   @override
   Widget build(BuildContext context) => CustomPaint(painter: CommittedInkPainter(
     widget.editor, widget.page, widget.pageWidth, hidden: widget.hidden,
-    surface: widget.surface, referenceSize: widget.referenceSize, cache: _cache));
+    surface: widget.surface, referenceSize: widget.referenceSize, cache: _cache,
+    devicePixelRatio: MediaQuery.maybeDevicePixelRatioOf(context) ?? View.of(context).devicePixelRatio));
 
   @override
   void dispose() { _cache.dispose(); super.dispose(); }
@@ -126,13 +127,28 @@ class CommittedInkCache {
   List<_CommittedInkChunk> _chunks = [];
   Size? _size;
   double? _pageWidth;
+  ui.Image? _image;
+  Size? _surfaceSize;
+  Size? _imageSize;
+  List<InkStroke> _rasterStrokes = const [];
+  bool _rasterFailed = false;
+  // Bound GPU memory even at extreme zoom or on very wide note surfaces.
+  static const maxRasterPixels = 2000000;
+  static const maxRasterDimension = 4096;
 
   @visibleForTesting
   int debugRecordedStrokes = 0;
   @visibleForTesting
   int get debugPictureCount => _chunks.length;
+  @visibleForTesting
+  int debugRasterizations = 0;
+  @visibleForTesting
+  int debugRasterizedStrokes = 0;
+  @visibleForTesting
+  ui.Image? get debugImage => _image;
 
-  void paint(Canvas canvas, Size size, double pageWidth, List<InkStroke> strokes) {
+  void paint(Canvas canvas, Size size, double pageWidth, List<InkStroke> strokes,
+      {Size? surfaceSize, double? devicePixelRatio}) {
     if (_size != size || _pageWidth != pageWidth) {
       dispose();
       _size = size;
@@ -186,10 +202,93 @@ class CommittedInkCache {
       if (!retained.contains(chunk)) chunk.picture.dispose();
     }
     _chunks = next;
+    if (devicePixelRatio != null && _paintRaster(canvas, surfaceSize ?? size,
+        size, pageWidth, strokes, devicePixelRatio)) return;
     for (final chunk in _chunks) { canvas.drawPicture(chunk.picture); }
   }
 
+  /// A retained Picture is still a list of vector commands. Cache the final
+  /// transparent pixels explicitly so scrolling submits one image, independent
+  /// of stroke count and the engine's automatic raster-cache heuristics.
+  bool _paintRaster(Canvas canvas, Size surface, Size reference, double pageWidth,
+      List<InkStroke> strokes, double dpr) {
+    if (strokes.isEmpty || surface.isEmpty) {
+      _disposeRaster();
+      return true;
+    }
+    if (!surface.width.isFinite || !surface.height.isFinite || !dpr.isFinite || dpr <= 0) return false;
+    final scale = math.min(dpr, math.min(
+      math.sqrt(maxRasterPixels / (surface.width * surface.height)),
+      maxRasterDimension / math.max(surface.width, surface.height)));
+    final pixels = Size(math.max(1, (surface.width * scale).floor()).toDouble(),
+      math.max(1, (surface.height * scale).floor()).toDouble());
+    final sameSize = _surfaceSize == surface && _imageSize == pixels;
+    final sameStrokes = listEquals(_rasterStrokes, strokes);
+    if (!sameSize || !sameStrokes) {
+      _rasterFailed = false;
+      final appendOnly = sameSize && _image != null &&
+        strokes.length > _rasterStrokes.length &&
+        Iterable<int>.generate(_rasterStrokes.length).every(
+          (i) => identical(strokes[i], _rasterStrokes[i]));
+      final recorder = ui.PictureRecorder();
+      final recording = Canvas(recorder);
+      recording.scale(pixels.width / surface.width, pixels.height / surface.height);
+      if (appendOnly) {
+        // Keep old ink at exactly the same pixel grid; rasterize only new ink.
+        recording.drawImageRect(_image!, Offset.zero & pixels, Offset.zero & surface,
+          Paint()..filterQuality = FilterQuality.none);
+        for (final stroke in strokes.skip(_rasterStrokes.length)) {
+          _paintCommittedStroke(recording, reference, pageWidth, stroke);
+        }
+      } else {
+        for (final chunk in _chunks) { recording.drawPicture(chunk.picture); }
+      }
+      final picture = recorder.endRecording();
+      ui.Image? nextImage;
+      try {
+        nextImage = picture.toImageSync(pixels.width.toInt(), pixels.height.toInt());
+        assert(() {
+          debugRasterizations++;
+          debugRasterizedStrokes += appendOnly ? strokes.length - _rasterStrokes.length : strokes.length;
+          return true;
+        }());
+      } on ui.PictureRasterizationException {
+        _rasterFailed = true;
+      } finally {
+        picture.dispose();
+      }
+      _image?.dispose();
+      _image = nextImage;
+      _surfaceSize = surface;
+      _imageSize = pixels;
+      _rasterStrokes = List.of(strokes);
+    }
+    if (_rasterFailed || _image == null) return false;
+    try {
+      canvas.drawImageRect(_image!, Offset.zero & pixels, Offset.zero & surface,
+        Paint()..filterQuality = FilterQuality.low);
+      return true;
+    } on ui.PictureRasterizationException {
+      // Deferred rasterization can fail when a GPU context is unavailable.
+      // Keep vector ink visible, and retry only after an edit/size change.
+      _image?.dispose();
+      _image = null;
+      _rasterFailed = true;
+      return false;
+    }
+  }
+
+  void _disposeRaster() {
+    _image?.dispose();
+    _image = null;
+    _surfaceSize = null;
+    _imageSize = null;
+    _rasterStrokes = const [];
+    _rasterFailed = false;
+  }
+
   void dispose() {
+    _disposeRaster();
     for (final chunk in _chunks) { chunk.picture.dispose(); }
     _chunks = [];
     _size = null;
@@ -212,7 +311,7 @@ void _paintCommittedStroke(Canvas canvas, Size size, double pageWidth, InkStroke
 
 class CommittedInkPainter extends CustomPainter {
   CommittedInkPainter(this.editor, this.page, this.pageWidth, {this.hidden = const {},
-    this.surface = InkSurface.page, this.referenceSize, this.cache})
+    this.surface = InkSurface.page, this.referenceSize, this.cache, this.devicePixelRatio})
       : super(repaint: editor.inkSignal(page, surface));
   final EditorController editor;
   final int page;
@@ -221,6 +320,7 @@ class CommittedInkPainter extends CustomPainter {
   final InkSurface surface;
   final Size? referenceSize;
   final CommittedInkCache? cache;
+  final double? devicePixelRatio;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -228,7 +328,8 @@ class CommittedInkPainter extends CustomPainter {
       stroke.surface == surface && !hidden.contains(stroke.id));
     final reference = referenceSize ?? size;
     if (cache != null) {
-      cache!.paint(canvas, reference, pageWidth, strokes.toList());
+      cache!.paint(canvas, reference, pageWidth, strokes.toList(),
+        surfaceSize: size, devicePixelRatio: devicePixelRatio);
     } else {
       for (final stroke in strokes) { _paintCommittedStroke(canvas, reference, pageWidth, stroke); }
     }
@@ -237,7 +338,8 @@ class CommittedInkPainter extends CustomPainter {
   @override
   bool shouldRepaint(CommittedInkPainter old) => old.editor != editor ||
       old.page != page || old.pageWidth != pageWidth || !setEquals(old.hidden, hidden) ||
-      old.surface != surface || old.referenceSize != referenceSize || old.cache != cache;
+      old.surface != surface || old.referenceSize != referenceSize || old.cache != cache ||
+      old.devicePixelRatio != devicePixelRatio;
 }
 
 class ActiveInk extends ChangeNotifier {

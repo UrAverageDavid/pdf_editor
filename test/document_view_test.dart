@@ -61,6 +61,30 @@ List<ui.Picture> recordedPictures(ContainerLayer root) {
 }
 
 void main() {
+  testWidgets('document options exposes PDF export and commits active input first', (tester) async {
+    final renders = RenderService(FakePdf());
+    final editor = EditorController(sampleDocument(), MemoryRepository());
+    var exportedStrokeCount = -1;
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: EditorScreen(
+      editor: editor, renders: renders, onOpen: () {}, onBack: () {},
+      onExport: () => exportedStrokeCount = editor.document.strokeCount))));
+    await tester.pumpAndSettle();
+    final canvas = tester.getRect(find.byType(DocumentView));
+    final pen = await tester.startGesture(canvas.topLeft + const Offset(150, 100),
+      kind: PointerDeviceKind.stylus);
+    await pen.moveBy(const Offset(40, 20));
+    await tester.tap(find.byTooltip('Document options'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Export annotated PDF…'));
+    await tester.pumpAndSettle();
+    expect(exportedStrokeCount, 1);
+    await pen.up();
+    expect(editor.document.strokeCount, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    editor.dispose();
+  });
+
   for (final pattern in [WritingPattern.blank, WritingPattern.grid]) {
     testWidgets('$pattern paper surface is retained during scrolling; offscreen notes are lazy', (tester) async {
       final document = FakePdf();
@@ -143,6 +167,13 @@ void main() {
     final saved = sampleDocument();
     saved.writingAreas[0] = const WritingArea(pattern: WritingPattern.grid);
     final editor = PaintCountingEditor(saved, MemoryRepository());
+    saved.annotations[0] = [
+      for (final surface in InkSurface.values)
+        for (var i = 0; i < 40; i++) InkStroke(id: '${surface.name}-$i', pageIndex: 0,
+          surface: surface, width: 2, color: 0xff2947c7, createdAt: DateTime.utc(2026),
+          points: List.generate(128, (p) => InkPoint(
+            .05 + .4 * p / 128, .1 + i * .015 + (p % 7) * .001, .75, p * 4167))),
+    ];
     final viewport = ViewportController(renders.document.pageSizes);
     await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
       editor: editor, renders: renders, viewport: viewport))));
@@ -153,6 +184,12 @@ void main() {
     final notes = find.byKey(const ValueKey('notes-0'));
     final pageSize = tester.getSize(page);
     final notesSize = tester.getSize(notes);
+    final inkCaches = tester.widgetList<CustomPaint>(find.byType(CustomPaint))
+      .map((p) => p.painter).whereType<CommittedInkPainter>()
+      .where((p) => p.page == 0).map((p) => p.cache!).toList();
+    final rasterizations = [for (final cache in inkCaches) cache.debugRasterizations];
+    final images = [for (final cache in inkCaches) cache.debugImage];
+    expect(images.every((image) => image != null), isTrue);
     editor.firstPageReads = 0;
     for (var i = 0; i < 100; i++) {
       viewport.pan(Offset(i.isEven ? -.37 : .37, -.73));
@@ -161,6 +198,9 @@ void main() {
       expect(tester.getSize(notes), notesSize);
     }
     expect(editor.firstPageReads, 0, reason: 'Scrolling must only move the retained ink layers');
+    expect([for (final cache in inkCaches) cache.debugRasterizations], rasterizations);
+    expect([for (final cache in inkCaches) cache.debugImage], orderedEquals(images),
+      reason: 'Annotated PDF and notes surfaces must reuse raster images while scrolling');
     editor.addStroke(stroke('page-only'));
     await tester.pump();
     expect(editor.firstPageReads, 1, reason: 'A PDF edit must not repaint note ink');

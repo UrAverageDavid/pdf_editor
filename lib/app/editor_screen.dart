@@ -16,12 +16,13 @@ import 'annotation_toolbar.dart';
 
 class EditorScreen extends StatefulWidget {
   const EditorScreen({super.key, required this.editor, required this.renders,
-    required this.onOpen, required this.onBack, this.onBackup});
+    required this.onOpen, required this.onBack, this.onBackup, this.onExport});
   final EditorController editor;
   final RenderService renders;
   final VoidCallback onOpen;
   final VoidCallback onBack;
   final VoidCallback? onBackup;
+  final VoidCallback? onExport;
   @override
   State<EditorScreen> createState() => EditorScreenState();
 }
@@ -162,14 +163,16 @@ class EditorScreenState extends State<EditorScreen> {
         action(Icons.file_open_outlined, 'Open another PDF', widget.onOpen),
         PopupMenuButton<String>(tooltip: 'Document options',
           icon: const Icon(Icons.more_horiz, color: Colors.white), onSelected: (value) {
+          if (value == 'export') { finishInput(); widget.onExport?.call(); }
           if (value == 'backup') widget.onBackup?.call();
           if (value == 'about') showAboutDialog(context: context, applicationName: 'Papertrail',
             applicationVersion: 'Prototype 0.1', children: [const Text(
               'Pen or mouse draws. Touch scrolls and pinches to zoom. '
               'P: selected preset, M: highlighter preset, E: eraser, H: hand, S: shape detection.\n\n'
-              'Notes save locally and reopen automatically. Annotated PDF export, high-resolution tiles, '
+              'Notes save locally and reopen automatically. Export annotated PDFs from Document options. High-resolution tiles '
               'and Surface hardware tuning are next milestones.')]);
         }, itemBuilder: (_) => [
+          if (widget.onExport != null) const PopupMenuItem(value: 'export', child: Text('Export annotated PDF…')),
           if (widget.onBackup != null) const PopupMenuItem(value: 'backup', child: Text('Save annotation backup…')),
           const PopupMenuItem(value: 'about', child: Text('About this prototype')),
         ]),

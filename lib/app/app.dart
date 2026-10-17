@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 import '../features/annotations/editor_controller.dart';
 import '../features/document/app_document.dart';
 import '../features/document/local_repository.dart';
+import '../features/export/pdfium_pdf_exporter.dart';
 import '../features/pdf_viewer/pdf_engine.dart';
 import '../features/pdf_viewer/render_service.dart';
 import 'editor_screen.dart';
@@ -57,6 +58,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   RenderService? _renders;
   List<AppDocument> _recent = [];
   bool _busy = false;
+  String _busyText = 'Preparing your document…';
   bool _ready = false;
   String? _libraryError;
 
@@ -204,6 +206,33 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     finally { if (mounted) setState(() => _busy = false); }
   }
 
+  Future<void> _export() async {
+    if (_editor == null || _busy) return;
+    _editorKey.currentState?.finishInput();
+    setState(() { _busy = true; _busyText = 'Exporting annotated PDF…'; });
+    try {
+      final document = _editor!.document;
+      final snapshot = AppDocument.fromJson(document.toJson(), document.sourcePath);
+      final destination = await getSaveLocation(
+        suggestedName: '${p.basenameWithoutExtension(snapshot.displayName)}.annotated.pdf',
+        acceptedTypeGroups: [const XTypeGroup(label: 'PDF document', extensions: ['pdf'])]);
+      if (destination == null) return;
+      final path = p.extension(destination.path).toLowerCase() == '.pdf'
+        ? destination.path : '${destination.path}.pdf';
+      await widget.repository.verifySource(snapshot.id);
+      await PdfiumPdfExporter(libraryRoot: widget.repository.root.path).exportAnnotatedPdf(
+        document: snapshot, outputPath: path, onProgress: (completed, total) {
+          if (mounted) setState(() => _busyText = 'Exporting PDF: $completed of $total pages…');
+        });
+      _message('Annotated PDF saved to $path');
+    } catch (error, stack) {
+      debugPrint('PDF export failed: $error\n$stack');
+      _message('Could not export the PDF. Your document and notes are unchanged. $error');
+    } finally {
+      if (mounted) setState(() { _busy = false; _busyText = 'Preparing your document…'; });
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) {
@@ -235,13 +264,14 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
       if (_editor != null && _renders != null)
         EditorScreen(key: _editorKey, editor: _editor!, renders: _renders!,
           onOpen: _pick, onBack: _back,
+          onExport: Platform.isWindows || Platform.isMacOS || Platform.isLinux ? _export : null,
           onBackup: Platform.isWindows || Platform.isMacOS || Platform.isLinux ? _backup : null)
       else LibraryScreen(documents: _recent, loading: !_ready,
         error: _libraryError, onOpen: _pick, onSample: _sample,
         onRecent: _openRecent, onRetry: _loadRecent),
       if (_busy) Positioned.fill(child: ColoredBox(color: paper.withValues(alpha: .76),
-        child: const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-          CircularProgressIndicator(), SizedBox(height: 20), Text('Preparing your document…'),
+        child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const CircularProgressIndicator(), const SizedBox(height: 20), Text(_busyText),
         ])))),
     ]))),
   );
