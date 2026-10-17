@@ -10,6 +10,37 @@ import 'package:papertrail/features/document/app_document.dart';
 import 'helpers.dart';
 
 void main() {
+  test('ink signals isolate surfaces and ignore writing-paper metadata', () {
+    final editor = EditorController(sampleDocument(), MemoryRepository());
+    addTearDown(editor.dispose);
+    var pages = 0;
+    var notes = 0;
+    editor.inkSignal(0, InkSurface.page).addListener(() => pages++);
+    editor.inkSignal(0, InkSurface.notes).addListener(() => notes++);
+    editor.addStroke(stroke('pdf'));
+    expect((pages, notes), (1, 0));
+    editor.expandWritingArea(0);
+    editor.setWritingPaper(0, pattern: WritingPattern.grid);
+    editor.toggleWritingArea(0);
+    editor.undo();
+    expect((pages, notes), (1, 0));
+    editor.addStroke(InkStroke(id: 'note', pageIndex: 0, surface: InkSurface.notes,
+      points: stroke('a').points, width: 2, color: 0xff000000,
+      createdAt: DateTime.utc(2026)), writingAreaWidth: 1);
+    expect((pages, notes), (1, 1));
+    editor.erase({'note'}, 0, writingAreaWidth: .5);
+    expect((pages, notes), (1, 2));
+    editor.undo();
+    expect((pages, notes), (1, 3));
+    editor.redo();
+    expect((pages, notes), (1, 4));
+    editor.undo();
+    editor.erase({'pdf', 'note'}, 0);
+    expect((pages, notes), (2, 6));
+    editor.undo();
+    expect((pages, notes), (3, 7));
+  });
+
   test('legacy strokes default to freehand pen; new styles survive save and history', () async {
     final legacy = stroke('old').toJson()..remove('kind')..remove('shape');
     expect(InkStroke.fromJson(legacy).kind, InkKind.pen);

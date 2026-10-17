@@ -480,7 +480,9 @@ class DocumentViewState extends State<DocumentView>
           child: ClipRect(child: ColoredBox(color: const Color(0xffe9e9e5),
             child: Stack(children: [
               for (final page in pages)
-                Positioned.fromRect(key: ValueKey('page-$page'), rect: view.pageRect(page),
+                Positioned(key: ValueKey('page-$page'),
+                  left: view.pageRect(page).left, top: view.pageRect(page).top,
+                  width: view.pageSize(page).width, height: view.pageSize(page).height,
                   child: RepaintBoundary(child: DecoratedBox(
                     decoration: BoxDecoration(color: Colors.white,
                       boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: .08), blurRadius: 12, offset: const Offset(0, 3))]),
@@ -488,9 +490,10 @@ class DocumentViewState extends State<DocumentView>
                       RepaintBoundary(child: PageImage(key: ValueKey('pdf-$page'),
                         renders: widget.renders, page: page, scale: view.scale * dpr,
                         priority: page == view.currentPage ? 0 : view.layout.pages[page].overlaps(visible) ? 1 : 3)),
-                      RepaintBoundary(child: CustomPaint(painter: CommittedInkPainter(
-                        widget.editor, page, view.layout.pages[page].width,
-                        hidden: _erasing && _page == page ? Set.of(_erased) : const {}))),
+                      RepaintBoundary(child: CommittedInk(
+                        editor: widget.editor, page: page, pageWidth: view.layout.pages[page].width,
+                        hidden: _erasing && _page == page && _ink.surface == InkSurface.page
+                          ? Set.of(_erased) : const {})),
                       RepaintBoundary(child: CustomPaint(painter: ActiveInkPainter(
                         _ink, page, view.layout.pages[page].width))),
                     ])),
@@ -498,8 +501,10 @@ class DocumentViewState extends State<DocumentView>
                 ),
               for (final page in pages)
                 if (view.layout.notes[page].width > 0)
-                  Positioned.fromRect(key: ValueKey('notes-$page'),
-                    rect: view.screenRect(view.layout.notes[page]),
+                  Positioned(key: ValueKey('notes-$page'),
+                    left: view.screenRect(view.layout.notes[page]).left,
+                    top: view.pageRect(page).top,
+                    width: view.notesSize(page).width, height: view.notesSize(page).height,
                     child: Semantics(label: 'Writing space for page ${page + 1}',
                       child: ClipRect(child: DecoratedBox(
                         decoration: const BoxDecoration(color: Color(0xfffffdf5),
@@ -509,13 +514,14 @@ class DocumentViewState extends State<DocumentView>
                             pattern: widget.editor.document.writingAreas[page]!.pattern,
                             spacing: widget.editor.document.writingAreas[page]!.spacing,
                             scale: view.scale))),
-                          RepaintBoundary(child: CustomPaint(painter: CommittedInkPainter(
-                            widget.editor, page, view.layout.pages[page].width,
-                            surface: InkSurface.notes, referenceSize: view.pageRect(page).size,
-                            hidden: _erasing && _page == page ? Set.of(_erased) : const {}))),
+                          RepaintBoundary(child: CommittedInk(
+                            editor: widget.editor, page: page, pageWidth: view.layout.pages[page].width,
+                            surface: InkSurface.notes, referenceSize: view.pageSize(page),
+                            hidden: _erasing && _page == page && _ink.surface == InkSurface.notes
+                              ? Set.of(_erased) : const {})),
                           RepaintBoundary(child: CustomPaint(painter: ActiveInkPainter(
                             _ink, page, view.layout.pages[page].width,
-                            surface: InkSurface.notes, referenceSize: view.pageRect(page).size))),
+                            surface: InkSurface.notes, referenceSize: view.pageSize(page)))),
                         ]),
                       )))),
               if (_erasePosition != null) Positioned(left: _erasePosition!.dx - 12,

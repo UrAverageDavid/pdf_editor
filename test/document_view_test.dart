@@ -17,6 +17,16 @@ import 'package:papertrail/features/pdf_viewer/writing_paper_painter.dart';
 
 import 'helpers.dart';
 
+class PaintCountingEditor extends EditorController {
+  PaintCountingEditor(super.document, super.repository);
+  int firstPageReads = 0;
+  @override
+  List<InkStroke> strokes(int page) {
+    if (page == 0) firstPageReads++;
+    return super.strokes(page);
+  }
+}
+
 class FakePdf implements PdfDocumentHandle {
   final rendered = <int>[];
   @override
@@ -41,6 +51,44 @@ class FakePdf implements PdfDocumentHandle {
 }
 
 void main() {
+  testWidgets('fractional scrolling retains PDF and notes ink layers and exact sizes', (tester) async {
+    final renders = RenderService(FakePdf());
+    final saved = sampleDocument();
+    saved.writingAreas[0] = const WritingArea(pattern: WritingPattern.grid);
+    final editor = PaintCountingEditor(saved, MemoryRepository());
+    final viewport = ViewportController(renders.document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    viewport.setZoom(.65);
+    await tester.pumpAndSettle();
+    final page = find.byKey(const ValueKey('page-0'));
+    final notes = find.byKey(const ValueKey('notes-0'));
+    final pageSize = tester.getSize(page);
+    final notesSize = tester.getSize(notes);
+    editor.firstPageReads = 0;
+    for (var i = 0; i < 100; i++) {
+      viewport.pan(Offset(i.isEven ? -.37 : .37, -.73));
+      await tester.pump();
+      expect(tester.getSize(page), pageSize);
+      expect(tester.getSize(notes), notesSize);
+    }
+    expect(editor.firstPageReads, 0, reason: 'Scrolling must only move the retained ink layers');
+    editor.addStroke(stroke('page-only'));
+    await tester.pump();
+    expect(editor.firstPageReads, 1, reason: 'A PDF edit must not repaint note ink');
+    editor.firstPageReads = 0;
+    editor.addStroke(InkStroke(id: 'note-only', pageIndex: 0, surface: InkSurface.notes,
+      points: const [InkPoint(.1, .2, .8, 0)], width: 2, color: 0xff000000,
+      createdAt: DateTime.utc(2026)));
+    await tester.pump();
+    expect(editor.firstPageReads, 1, reason: 'A note edit must not repaint PDF ink');
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  });
+
   testWidgets('sustained note writing batches layout growth and fits exactly on release', (tester) async {
     final renders = RenderService(FakePdf());
     final repository = MemoryRepository();
@@ -1002,7 +1050,7 @@ void main() {
     expect(editor.strokes(0).last.surface, InkSurface.notes);
     final note = editor.strokes(0).last.toJson();
     final fittedWidth = editor.document.writingAreas[0]!.width;
-    final reference = viewport.pageRect(0).size;
+    final reference = viewport.pageSize(0);
     editor.expandWritingArea(0);
     await tester.pump();
     final painters = tester.widgetList<CustomPaint>(find.byType(CustomPaint))

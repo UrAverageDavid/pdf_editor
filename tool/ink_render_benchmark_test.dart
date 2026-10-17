@@ -10,6 +10,43 @@ import 'package:papertrail/features/annotations/pen_preset.dart';
 // Run with: flutter test tool/ink_render_benchmark_test.dart --reporter expanded
 // Measures Dart-side display-list recording, not GPU or physical pen latency.
 void main() {
+  test('record saved ink after successive stroke commits', () {
+    const size = Size(600, 800);
+    InkStroke stroke(int index) => InkStroke(id: '$index', pageIndex: 0,
+      points: List.generate(128, (i) => InkPoint(
+        .1 + .8 * i / 128, .5 + .25 * math.sin((i + index) / 20), .75, i * 4167)),
+      width: 2.2, color: 0xff2947c7, createdAt: DateTime.utc(2026),
+      penStyle: const PenStyle(type: PenType.fountain));
+    for (final count in [100, 500]) {
+      final initial = List.generate(count, stroke);
+      final appended = List.generate(30, (i) => stroke(count + i));
+      for (final cached in [false, true]) {
+        final strokes = List<InkStroke>.of(initial);
+        final cache = CommittedInkCache();
+        void frame() {
+          final recorder = ui.PictureRecorder();
+          final canvas = Canvas(recorder);
+          if (cached) {
+            cache.paint(canvas, size, 600, strokes);
+          } else {
+            for (final stroke in strokes) {
+              StrokeSmoother.paint(canvas, size, stroke.points, stroke.width,
+                Color(stroke.color), penStyle: stroke.penStyle);
+            }
+          }
+          recorder.endRecording().dispose();
+        }
+        frame();
+        final watch = Stopwatch()..start();
+        for (final stroke in appended) { strokes.add(stroke); frame(); }
+        watch.stop();
+        debugPrint('Saved ink, $count strokes, cached=$cached: '
+          '${(watch.elapsedMicroseconds / 30000).toStringAsFixed(3)} ms/commit');
+        cache.dispose();
+      }
+    }
+  });
+
   test('record sustained live ink frames', () {
     for (final type in [PenType.fountain, PenType.brush, PenType.highlighter]) {
       for (final count in [1000, 6000]) {

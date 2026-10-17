@@ -2,6 +2,7 @@ import 'dart:collection';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'editor_controller.dart';
@@ -80,10 +81,12 @@ class StrokeSmoother {
   }
 }
 
-class CommittedInkPainter extends CustomPainter {
-  CommittedInkPainter(this.editor, this.page, this.pageWidth, {this.hidden = const {},
-    this.surface = InkSurface.page, this.referenceSize})
-      : super(repaint: editor.pageSignal(page));
+/// Own pictures for precisely the lifetime of a mounted surface. Thumbnails
+/// have separate caches so their size cannot invalidate the main canvas cache.
+class CommittedInk extends StatefulWidget {
+  const CommittedInk({super.key, required this.editor, required this.page,
+    required this.pageWidth, this.hidden = const {},
+    this.surface = InkSurface.page, this.referenceSize});
   final EditorController editor;
   final int page;
   final double pageWidth;
@@ -92,21 +95,149 @@ class CommittedInkPainter extends CustomPainter {
   final Size? referenceSize;
 
   @override
-  void paint(Canvas canvas, Size size) {
-    for (final stroke in editor.strokes(page)) {
-      if (stroke.surface == surface && !hidden.contains(stroke.id)) {
-        final reference = referenceSize ?? size;
-        StrokeSmoother.paint(canvas, reference, stroke.points,
-            stroke.width * reference.width / pageWidth, Color(stroke.color),
-            kind: stroke.kind, shape: stroke.shape, penStyle: stroke.penStyle);
+  State<CommittedInk> createState() => _CommittedInkState();
+}
+
+class _CommittedInkState extends State<CommittedInk> {
+  final _cache = CommittedInkCache();
+
+  @override
+  void didUpdateWidget(CommittedInk oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.editor != widget.editor || oldWidget.page != widget.page ||
+        oldWidget.surface != widget.surface) _cache.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(painter: CommittedInkPainter(
+    widget.editor, widget.page, widget.pageWidth, hidden: widget.hidden,
+    surface: widget.surface, referenceSize: widget.referenceSize, cache: _cache));
+
+  @override
+  void dispose() { _cache.dispose(); super.dispose(); }
+}
+
+/// Saved strokes are immutable. Reuse unchanged groups by identity even when
+/// an earlier erase or undo shifts their indices. Keep each highlighter whole
+/// to preserve its uniform opacity and retain the original stroke paint order.
+class CommittedInkCache {
+  static const _maxStrokes = 32;
+  static const _maxPoints = 4096;
+  List<_CommittedInkChunk> _chunks = [];
+  Size? _size;
+  double? _pageWidth;
+
+  @visibleForTesting
+  int debugRecordedStrokes = 0;
+  @visibleForTesting
+  int get debugPictureCount => _chunks.length;
+
+  void paint(Canvas canvas, Size size, double pageWidth, List<InkStroke> strokes) {
+    if (_size != size || _pageWidth != pageWidth) {
+      dispose();
+      _size = size;
+      _pageWidth = pageWidth;
+    }
+    final indices = <InkStroke, int>{
+      for (var i = 0; i < strokes.length; i++) strokes[i]: i,
+    };
+    final reusable = <InkStroke, _CommittedInkChunk>{};
+    for (final chunk in _chunks) {
+      final start = indices[chunk.strokes.first];
+      if (start == null || start + chunk.strokes.length > strokes.length) continue;
+      // Fill the last partial group on append, rather than retaining one
+      // picture per pen-up. Earlier complete groups stay untouched.
+      if (identical(chunk, _chunks.last) && chunk.strokes.length < _maxStrokes &&
+          chunk.pointCount < _maxPoints && start + chunk.strokes.length < strokes.length) continue;
+      var matches = true;
+      for (var i = 0; i < chunk.strokes.length; i++) {
+        if (!identical(chunk.strokes[i], strokes[start + i])) { matches = false; break; }
       }
+      if (matches) reusable[chunk.strokes.first] = chunk;
+    }
+
+    final next = <_CommittedInkChunk>[];
+    for (var start = 0; start < strokes.length;) {
+      final cached = reusable[strokes[start]];
+      if (cached != null) {
+        next.add(cached);
+        start += cached.strokes.length;
+        continue;
+      }
+      var end = start;
+      var points = 0;
+      do {
+        points += strokes[end].points.length;
+        end++;
+      } while (end < strokes.length && end - start < _maxStrokes &&
+          points < _maxPoints && !reusable.containsKey(strokes[end]));
+      final group = strokes.sublist(start, end);
+      final recorder = ui.PictureRecorder();
+      final recording = Canvas(recorder);
+      for (final stroke in group) {
+        _paintCommittedStroke(recording, size, pageWidth, stroke);
+      }
+      next.add(_CommittedInkChunk(group, points, recorder.endRecording()));
+      assert(() { debugRecordedStrokes += group.length; return true; }());
+      start = end;
+    }
+    final retained = next.toSet();
+    for (final chunk in _chunks) {
+      if (!retained.contains(chunk)) chunk.picture.dispose();
+    }
+    _chunks = next;
+    for (final chunk in _chunks) { canvas.drawPicture(chunk.picture); }
+  }
+
+  void dispose() {
+    for (final chunk in _chunks) { chunk.picture.dispose(); }
+    _chunks = [];
+    _size = null;
+    _pageWidth = null;
+  }
+}
+
+class _CommittedInkChunk {
+  const _CommittedInkChunk(this.strokes, this.pointCount, this.picture);
+  final List<InkStroke> strokes;
+  final int pointCount;
+  final ui.Picture picture;
+}
+
+void _paintCommittedStroke(Canvas canvas, Size size, double pageWidth, InkStroke stroke) {
+  StrokeSmoother.paint(canvas, size, stroke.points,
+    stroke.width * size.width / pageWidth, Color(stroke.color),
+    kind: stroke.kind, shape: stroke.shape, penStyle: stroke.penStyle);
+}
+
+class CommittedInkPainter extends CustomPainter {
+  CommittedInkPainter(this.editor, this.page, this.pageWidth, {this.hidden = const {},
+    this.surface = InkSurface.page, this.referenceSize, this.cache})
+      : super(repaint: editor.inkSignal(page, surface));
+  final EditorController editor;
+  final int page;
+  final double pageWidth;
+  final Set<String> hidden;
+  final InkSurface surface;
+  final Size? referenceSize;
+  final CommittedInkCache? cache;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final strokes = editor.strokes(page).where((stroke) =>
+      stroke.surface == surface && !hidden.contains(stroke.id));
+    final reference = referenceSize ?? size;
+    if (cache != null) {
+      cache!.paint(canvas, reference, pageWidth, strokes.toList());
+    } else {
+      for (final stroke in strokes) { _paintCommittedStroke(canvas, reference, pageWidth, stroke); }
     }
   }
 
   @override
   bool shouldRepaint(CommittedInkPainter old) => old.editor != editor ||
-      old.page != page || old.pageWidth != pageWidth || old.hidden != hidden ||
-      old.surface != surface || old.referenceSize != referenceSize;
+      old.page != page || old.pageWidth != pageWidth || !setEquals(old.hidden, hidden) ||
+      old.surface != surface || old.referenceSize != referenceSize || old.cache != cache;
 }
 
 class ActiveInk extends ChangeNotifier {

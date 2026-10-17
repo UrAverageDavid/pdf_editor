@@ -33,6 +33,10 @@ class ViewportController extends ChangeNotifier {
   Rect get visibleDocument => Rect.fromPoints(toDocument(Offset.zero),
       toDocument(Offset(size.width, size.height)));
   Offset toDocument(Offset viewport) => (viewport - offset) / scale;
+  /// Sizes must not be recovered by subtracting translated rectangle edges:
+  /// that introduces scroll-dependent rounding and invalidates paint layers.
+  Size pageSize(int page) => _sizes[page] * scale;
+  Size notesSize(int page) => Size(layout.notes[page].width * scale, pageSize(page).height);
   Rect pageRect(int page) {
     return screenRect(layout.pages[page]);
   }

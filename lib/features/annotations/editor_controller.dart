@@ -25,7 +25,7 @@ class EditorController extends ChangeNotifier {
   final AppDocument document;
   final AnnotationRepository repository;
   final Duration debounce;
-  final _pageSignals = <int, ValueNotifier<int>>{};
+  final _inkSignals = <(int, InkSurface), ValueNotifier<int>>{};
   final _undo = <StrokeChange>[];
   final _redo = <StrokeChange>[];
   Timer? _timer;
@@ -83,8 +83,8 @@ class EditorController extends ChangeNotifier {
   bool get canRedo => _redo.isNotEmpty;
   bool get isDirty => _revision != _savedRevision;
 
-  ValueListenable<int> pageSignal(int page) =>
-      _pageSignals.putIfAbsent(page, () => ValueNotifier(0));
+  ValueListenable<int> inkSignal(int page, InkSurface surface) =>
+      _inkSignals.putIfAbsent((page, surface), () => ValueNotifier(0));
   List<InkStroke> strokes(int page) => document.annotations[page] ?? const [];
 
   void setTool(EditorTool value) { tool = value; notifyListeners(); }
@@ -180,18 +180,17 @@ class EditorController extends ChangeNotifier {
   }
 
   void _apply(StrokeChange change, {required bool forward}) {
-    final affected = <int>{};
+    final affected = <(int, InkSurface)>{};
     final areaPage = change.areaPage;
     if (areaPage != null) {
       final area = forward ? change.areaAfter : change.areaBefore;
       if (area == null) { document.writingAreas.remove(areaPage); }
       else { document.writingAreas[areaPage] = area; }
-      affected.add(areaPage);
     }
     for (final stroke in change.added) {
       final list = document.annotations.putIfAbsent(stroke.pageIndex, () => []);
       if (forward) { list.add(stroke); } else { list.removeWhere((s) => s.id == stroke.id); }
-      affected.add(stroke.pageIndex);
+      affected.add((stroke.pageIndex, stroke.surface));
     }
     final entries = change.removed.entries.toList()..sort((a, b) => a.value.compareTo(b.value));
     for (final entry in entries) {
@@ -199,10 +198,10 @@ class EditorController extends ChangeNotifier {
       final list = document.annotations.putIfAbsent(stroke.pageIndex, () => []);
       if (forward) { list.removeWhere((s) => s.id == stroke.id); }
       else { list.insert(entry.value.clamp(0, list.length).toInt(), stroke); }
-      affected.add(stroke.pageIndex);
+      affected.add((stroke.pageIndex, stroke.surface));
     }
-    for (final page in affected) {
-      final signal = _pageSignals[page];
+    for (final surface in affected) {
+      final signal = _inkSignals[surface];
       if (signal != null) signal.value++;
     }
   }
@@ -276,7 +275,7 @@ class EditorController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _timer?.cancel();
-    for (final signal in _pageSignals.values) { signal.dispose(); }
+    for (final signal in _inkSignals.values) { signal.dispose(); }
     super.dispose();
   }
 }

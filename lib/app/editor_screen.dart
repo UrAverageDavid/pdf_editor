@@ -250,7 +250,7 @@ class _Thumbnails extends StatelessWidget {
               AspectRatio(aspectRatio: size.width / size.height,
                 child: Stack(fit: StackFit.expand, children: [
                   PageImage(renders: renders, page: page, scale: .3, priority: 4),
-                  IgnorePointer(child: CustomPaint(painter: CommittedInkPainter(editor, page, size.width))),
+                  IgnorePointer(child: CommittedInk(editor: editor, page: page, pageWidth: size.width)),
                 ])),
               const SizedBox(height: 8), Row(mainAxisSize: MainAxisSize.min, children: [
                 Text('${page + 1}', style: const TextStyle(fontSize: 11)),

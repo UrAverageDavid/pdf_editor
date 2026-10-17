@@ -235,7 +235,13 @@ lib/features/export/             PdfExporter interface for the next milestone
 ```
 
 Only the PDF adapter imports pdfrx. Pointer samples repaint active ink locally; committed ink
-and PDF images have separate repaint boundaries. Live pen strokes cache completed segments
+and PDF images have separate repaint boundaries. PDF and margin ink have independent change
+signals, and display sizes are calculated independently of scroll offsets so moving a page
+does not invalidate its retained layers. Saved ink caches ordered groups of up to 32 strokes
+with a soft 4096-point limit (individual strokes remain whole for highlighter opacity).
+Edits replace affected groups, zoom replaces their screen-space geometry, and unmounting a
+surface releases its pictures. Thumbnail caches are separate from the main canvas.
+Live pen strokes cache completed segments
 and regenerate only their changing tail, preserving pressure, nib direction, and brush taper.
 Highlighters append to a single path to preserve uniform translucency. Gesture caches reset
 on scale/style changes and are released when the stroke ends. Background renders pause while writing;
