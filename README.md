@@ -241,6 +241,12 @@ does not invalidate its retained layers. Saved ink caches ordered groups of up t
 with a soft 4096-point limit (individual strokes remain whole for highlighter opacity).
 Edits replace affected groups, zoom replaces their screen-space geometry, and unmounting a
 surface releases its pictures. Thumbnail caches are separate from the main canvas.
+Writing-space backgrounds, borders and clips are retained as a single surface during
+scrolling, including when no ink is present. Only margins intersecting the viewport are
+mounted; PDF neighbour prefetch remains unchanged. The document surface has its own repaint
+boundary so toolbar/menu animations can reuse its display lists. Widget regressions check
+blank/grid margin paint counts and menu animation isolation; these are not Windows GPU
+timing measurements.
 Live pen strokes cache completed segments
 and regenerate only their changing tail, preserving pressure, nib direction, and brush taper.
 Highlighters append to a single path to preserve uniform translucency. Gesture caches reset

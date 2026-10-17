@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:papertrail/features/annotations/editor_controller.dart';
@@ -50,7 +51,93 @@ class FakePdf implements PdfDocumentHandle {
   Future<void> close() async {}
 }
 
+List<ui.Picture> recordedPictures(ContainerLayer root) {
+  final pictures = <ui.Picture>[];
+  for (var child = root.firstChild; child != null; child = child.nextSibling) {
+    if (child is PictureLayer && child.picture != null) pictures.add(child.picture!);
+    if (child is ContainerLayer) pictures.addAll(recordedPictures(child));
+  }
+  return pictures;
+}
+
 void main() {
+  for (final pattern in [WritingPattern.blank, WritingPattern.grid]) {
+    testWidgets('$pattern paper surface is retained during scrolling; offscreen notes are lazy', (tester) async {
+      final document = FakePdf();
+      final renders = RenderService(document);
+      final saved = sampleDocument();
+      for (var page = 0; page < 3; page++) {
+        saved.writingAreas[page] = WritingArea(pattern: pattern);
+      }
+      final editor = EditorController(saved, MemoryRepository());
+      final viewport = ViewportController(document.pageSizes);
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+        editor: editor, renders: renders, viewport: viewport))));
+      viewport.revealWritingArea(0);
+      await tester.pumpAndSettle();
+      final paper = tester.renderObject<RenderDecoratedBox>(find.descendant(
+        of: find.byKey(const ValueKey('notes-0')), matching: find.byType(DecoratedBox)).first);
+      var paperPaints = 0;
+      final previousPaintCallback = debugOnProfilePaint;
+      debugOnProfilePaint = (object) {
+        previousPaintCallback?.call(object);
+        if (identical(object, paper)) paperPaints++;
+      };
+      final pdfRenders = document.rendered.length;
+      try {
+        for (var i = 0; i < 30; i++) {
+          viewport.pan(const Offset(0, -.73));
+          await tester.pump();
+        }
+      } finally {
+        debugOnProfilePaint = previousPaintCallback;
+      }
+      expect(paperPaints, 0,
+        reason: 'Scrolling must retain the entire paper surface, including its background and border');
+      expect(find.byKey(const ValueKey('notes-1')), findsNothing);
+      expect(find.byKey(const ValueKey('notes-2')), findsNothing);
+      expect(document.rendered.length, pdfRenders);
+      viewport.jumpTo(1);
+      viewport.revealWritingArea(1);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('notes-0')), findsNothing);
+      expect(find.byKey(const ValueKey('notes-1')), findsOneWidget);
+      // Culling a margin must not hide or delete it in the saved document.
+      expect(saved.writingAreas[0]!.visible, isTrue);
+      viewport.jumpTo(0);
+      viewport.revealWritingArea(0);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('notes-0')), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await renders.close();
+      viewport.dispose();
+      editor.dispose();
+    });
+  }
+
+  testWidgets('writing-space menu animation does not repaint the document surface', (tester) async {
+    final renders = RenderService(FakePdf());
+    final saved = sampleDocument()..writingAreas[0] = const WritingArea();
+    final editor = EditorController(saved, MemoryRepository());
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: EditorScreen(
+      editor: editor, renders: renders, onOpen: () {}, onBack: () {}))));
+    await tester.pumpAndSettle();
+    final surface = tester.renderObject<RenderRepaintBoundary>(
+      find.byKey(const ValueKey('document-surface')));
+    final pictures = recordedPictures(surface.debugLayer!);
+    expect(pictures, isNotEmpty);
+    await tester.tap(find.byTooltip('Writing space for page 1'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(find.text('Hide writing space (keep notes)'), findsOneWidget);
+    expect(recordedPictures(surface.debugLayer!), orderedEquals(pictures),
+      reason: 'Opening the menu must reuse all document display lists');
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    editor.dispose();
+  });
+
   testWidgets('fractional scrolling retains PDF and notes ink layers and exact sizes', (tester) async {
     final renders = RenderService(FakePdf());
     final saved = sampleDocument();

@@ -477,7 +477,9 @@ class DocumentViewState extends State<DocumentView>
           onPointerPanZoomStart: _trackpadStart,
           onPointerPanZoomUpdate: _trackpadUpdate,
           onPointerPanZoomEnd: (e) => _scroll.end(e.timeStamp),
-          child: ClipRect(child: ColoredBox(color: const Color(0xffe9e9e5),
+          // Menu/toolbar animations must not repaint the document underneath.
+          child: RepaintBoundary(key: const ValueKey('document-surface'),
+            child: ClipRect(child: ColoredBox(color: const Color(0xffe9e9e5),
             child: Stack(children: [
               for (final page in pages)
                 Positioned(key: ValueKey('page-$page'),
@@ -500,12 +502,17 @@ class DocumentViewState extends State<DocumentView>
                   )),
                 ),
               for (final page in pages)
-                if (view.layout.notes[page].width > 0)
+                // PDF neighbours are prefetched, but blank margins have no
+                // asynchronous work to warm up. Only mount visible margins.
+                if (view.layout.notes[page].width > 0 &&
+                    view.layout.notes[page].overlaps(visible))
                   Positioned(key: ValueKey('notes-$page'),
                     left: view.screenRect(view.layout.notes[page]).left,
                     top: view.pageRect(page).top,
                     width: view.notesSize(page).width, height: view.notesSize(page).height,
-                    child: Semantics(label: 'Writing space for page ${page + 1}',
+                    // Retain the paper, border and clips too, not just the ink.
+                    // Otherwise every scroll frame records that whole surface.
+                    child: RepaintBoundary(child: Semantics(label: 'Writing space for page ${page + 1}',
                       child: ClipRect(child: DecoratedBox(
                         decoration: const BoxDecoration(color: Color(0xfffffdf5),
                           border: Border(left: BorderSide(color: Color(0xffd6d1bf)))),
@@ -523,7 +530,7 @@ class DocumentViewState extends State<DocumentView>
                             _ink, page, view.layout.pages[page].width,
                             surface: InkSurface.notes, referenceSize: view.pageSize(page)))),
                         ]),
-                      )))),
+                      ))))),
               if (_erasePosition != null) Positioned(left: _erasePosition!.dx - 12,
                 top: _erasePosition!.dy - 12, width: 24, height: 24,
                 child: IgnorePointer(child: DecoratedBox(decoration: BoxDecoration(
@@ -548,7 +555,7 @@ class DocumentViewState extends State<DocumentView>
                         : widget.editor.document.writingAreas[_edgePage]!.visible
                           ? 'Add more space' : 'Show writing space'),
                     ))),
-            ])),
+            ]))),
           ),
         ),
       ),
