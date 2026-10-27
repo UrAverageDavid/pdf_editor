@@ -73,25 +73,57 @@ void main() {
     expect(cache.debugImage, isNull);
   });
 
-  test('raster ink stays bounded and is reused at fractional scroll offsets', () async {
+  test('large high-DPI surfaces replay vectors without reducing resolution', () async {
     final cache = CommittedInkCache();
     addTearDown(cache.dispose);
-    final strokes = List.generate(50, (i) => savedStroke(i, count: 128));
-    const surface = Size(20000, 1000);
-    Future<void> frame(double offset) => rasterize((canvas) {
-      canvas.translate(-offset, -.73 * offset);
-      cache.paint(canvas, const Size(600, 1000), 600, strokes,
-        surfaceSize: surface, devicePixelRatio: 3);
-    }, const Size(100, 100));
-    await frame(0);
-    final image = cache.debugImage!;
-    expect(image.width * image.height, lessThanOrEqualTo(CommittedInkCache.maxRasterPixels));
-    expect(math.max(image.width, image.height), lessThanOrEqualTo(CommittedInkCache.maxRasterDimension));
-    for (var i = 1; i <= 30; i++) { await frame(i * .37); }
-    expect(cache.debugImage, same(image));
-    expect(cache.debugRasterizations, 1);
-    cache.dispose();
-    expect(image.debugDisposed, isTrue);
+    final strokes = List.generate(4, (i) => savedStroke(i, count: 128));
+    for (final surface in [const Size(1200, 1600), const Size(20000, 1000)]) {
+      for (final offset in [0.0, .37, .74]) {
+        Future<List<int>> frame(bool cached) => rasterize((canvas) {
+          canvas.scale(3);
+          canvas.translate(-offset, -.73 * offset);
+          if (cached) {
+            cache.paint(canvas, const Size(60, 100), 60, strokes,
+              surfaceSize: surface, devicePixelRatio: 3);
+          } else {
+            for (final stroke in strokes) {
+              StrokeSmoother.paint(canvas, const Size(60, 100), stroke.points,
+                stroke.width, Color(stroke.color), kind: stroke.kind,
+                penStyle: stroke.penStyle, shape: stroke.shape);
+            }
+          }
+        }, const Size(240, 330));
+        expect(await frame(true), orderedEquals(await frame(false)));
+        expect(cache.debugImage, isNull);
+      }
+    }
+    expect(cache.debugRasterizations, 0);
+  });
+
+  test('fractional sizes and scroll offsets preserve vector ink sharpness', () async {
+    final cache = CommittedInkCache();
+    addTearDown(cache.dispose);
+    final strokes = [savedStroke(0), savedStroke(3)];
+    const surface = Size(100.3, 120.7);
+    for (final dpr in [1.25, 1.5, 2.0]) {
+      for (final offset in [0.0, .37]) {
+        Future<List<int>> frame(bool cached) => rasterize((canvas) {
+          canvas.scale(dpr);
+          canvas.translate(offset, offset);
+          canvas.clipRect(Offset.zero & surface);
+          if (cached) {
+            cache.paint(canvas, surface, surface.width, strokes, devicePixelRatio: dpr);
+          } else {
+            for (final stroke in strokes) {
+              StrokeSmoother.paint(canvas, surface, stroke.points, stroke.width,
+                Color(stroke.color), kind: stroke.kind, penStyle: stroke.penStyle, shape: stroke.shape);
+            }
+          }
+        }, const Size(240, 260));
+        expect(await frame(true), orderedEquals(await frame(false)),
+          reason: 'Fractional physical bounds must use vector replay at DPR $dpr, offset $offset');
+      }
+    }
   });
 
   test('cached saved ink preserves pixels, order and opacity through edits and zoom', () async {
@@ -162,12 +194,78 @@ void main() {
     expect(cache.debugPictureCount, 0);
   });
 
+  test('document geometry survives zoom and tiles match vectors at fractional origins', () async {
+    final cache = CommittedInkCache();
+    addTearDown(cache.dispose);
+    const document = Size(600, 800);
+    final strokes = [
+      ...List.generate(40, (i) => savedStroke(i, count: 32)),
+      InkStroke(id: 'cross-tiles', pageIndex: 0,
+        points: const [InkPoint(0, .38, .75, 0), InkPoint(1, .38, .75, 1)],
+        width: 1, color: 0xff000000, createdAt: DateTime.utc(2026)),
+    ];
+    Future<void> check(double zoom, double dpr, Offset origin, {bool tiles = true}) async {
+      final size = document * zoom;
+      final visible = Rect.fromLTWH(size.width * .25, size.height * .35, 570 / dpr, 330 / dpr);
+      Future<List<int>> frame(bool cached) => rasterize((canvas) {
+        canvas.translate(origin.dx, origin.dy);
+        canvas.scale(dpr);
+        canvas.translate(-visible.left, -visible.top);
+        if (cached) {
+          cache.paint(canvas, size, document.width, strokes, documentSize: document,
+            visibleRect: visible, devicePixelRatio: tiles ? dpr : null,
+            physicalOrigin: origin - visible.topLeft * dpr);
+        } else {
+          canvas.clipRect(visible, doAntiAlias: false);
+          canvas.scale(zoom);
+          for (final stroke in strokes) {
+            StrokeSmoother.paint(canvas, document, stroke.points, stroke.width,
+              Color(stroke.color), kind: stroke.kind, shape: stroke.shape, penStyle: stroke.penStyle);
+          }
+        }
+      }, const Size(600, 360));
+      final actual = await frame(true), expected = await frame(false);
+      var different = 0, maxDelta = 0, total = 0;
+      for (var i = 3; i < actual.length; i += 4) {
+        final delta = (actual[i] - expected[i]).abs();
+        if (delta != 0) different++;
+        maxDelta = math.max(maxDelta, delta); total += delta;
+      }
+      expect(expected.where((value) => value != 0), isNotEmpty);
+      if (!tiles) {
+        expect(actual, orderedEquals(expected));
+      } else {
+        // Separate raster targets can change edge tessellation slightly; they
+        // must not soften the image broadly or change highlighter opacity.
+        expect(different / (actual.length / 4), lessThan(.01));
+        expect(total / (actual.length / 4), lessThan(.1));
+        expect(maxDelta, lessThanOrEqualTo(64));
+      }
+    }
+    await check(1, 1, Offset.zero);
+    final rasters = cache.debugRasterizations;
+    await check(1, 1, Offset.zero);
+    expect(cache.debugRasterizations, rasters, reason: 'Settled tiles should be reused');
+    for (final zoom in [1.25, 2.0, 4.0]) {
+      await check(zoom, 1.5, const Offset(.37, .73), tiles: false);
+      await check(zoom, 1.5, const Offset(.37, .73));
+    }
+    expect(cache.debugRecordedStrokes, 41, reason: 'Zoom must reuse document geometry');
+    expect(cache.debugTileCount, lessThanOrEqualTo(7));
+    final removed = strokes.removeAt(0);
+    await check(1.25, 1.5, const Offset(.37, .73));
+    strokes.insert(0, removed); // Undo must invalidate the edited tiles too.
+    await check(1.25, 1.5, const Offset(.37, .73));
+    strokes.add(savedStroke(42));
+    await check(1.25, 1.5, const Offset(.37, .73));
+  });
+
   testWidgets('mounted ink caches are released when the surface is removed', (tester) async {
     final editor = EditorController(sampleDocument(), MemoryRepository());
     editor.document.annotations[0] = [savedStroke(1)];
     await tester.pumpWidget(Directionality(textDirection: TextDirection.ltr,
-      child: SizedBox(width: 100, height: 100, child: CommittedInk(
-        editor: editor, page: 0, pageWidth: 100, surface: InkSurface.notes))));
+      child: Center(child: SizedBox(width: 100, height: 100, child: CommittedInk(
+        editor: editor, page: 0, pageWidth: 100, surface: InkSurface.notes)))));
     final painter = tester.widgetList<CustomPaint>(find.byType(CustomPaint))
       .map((widget) => widget.painter).whereType<CommittedInkPainter>().single;
     expect(painter.cache!.debugPictureCount, 1);

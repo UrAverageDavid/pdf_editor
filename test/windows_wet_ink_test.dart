@@ -22,7 +22,7 @@ void main() {
     addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
     final ink = WindowsWetInk();
     await begin(ink);
-    ink.finish();
+    await ink.finish();
     ink.dispose();
     await tester.pump();
     expect(calls, isEmpty);
@@ -48,7 +48,7 @@ void main() {
     expect(args['clip'], [20, 40, 600, 800]);
     expect(args['width'], 6);
     expect(args['type'], 'brush');
-    ink.finish();
+    await ink.finish();
     await tester.idle();
     expect(ink.visible, isFalse);
     expect(calls.where((c) => c.method == 'freeze').single.arguments, args['token']);
@@ -75,6 +75,78 @@ void main() {
     }, variant: TargetPlatformVariant({TargetPlatform.windows}));
   }
 
+  testWidgets('confirmed samples arrive before retirement and stay tied to their token', (tester) async {
+    final frozen = Completer<Object?>();
+    final calls = <MethodCall>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      if (call.method == 'begin') return true;
+      if (call.method == 'freeze') return frozen.future;
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+    final ink = WindowsWetInk();
+    await begin(ink);
+    final token = (calls.singleWhere((c) => c.method == 'begin').arguments as Map)['token'];
+    var received = false;
+    final finished = ink.finish(onSamples: (points) {
+      received = true;
+      expect(points.map((p) => p.toJson()), [[.1, .2, .75, 0], [.4, .5, .8, 10000]]);
+      expect(calls.where((c) => c.method == 'retire'), isEmpty);
+    });
+    await begin(ink); // New stroke while the old sample reply is in flight.
+    await tester.pump();
+    expect(received, isFalse);
+    expect(calls.where((c) => c.method == 'retire'), isEmpty);
+    frozen.complete([[.1, .2, .75, 0], [.4, .5, .8, 10000]]);
+    await finished;
+    expect(received, isTrue);
+    expect(ink.visible, isTrue, reason: 'Finishing the old stroke must not hide the new preview');
+    await tester.pump();
+    expect(calls.singleWhere((c) => c.method == 'retire').arguments, token);
+    ink.dispose();
+    await tester.pump();
+  }, variant: TargetPlatformVariant({TargetPlatform.windows}));
+
+  testWidgets('translucent pens and highlighters keep a single renderer', (tester) async {
+    final calls = <MethodCall>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      return true;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+    final ink = WindowsWetInk();
+    for (final (style, color) in [
+      (const PenStyle(type: PenType.highlighter), 0xffffcc00),
+      (const PenStyle(type: PenType.brush), 0x80223344),
+    ]) {
+      await ink.begin(position: const Offset(10, 10), clip: const Rect.fromLTWH(0, 0, 100, 100),
+        devicePixelRatio: 2, width: 3, color: color, style: style);
+      expect(ink.visible, isFalse);
+      await ink.finish();
+    }
+    expect(calls.where((c) => c.method == 'begin' || c.method == 'freeze'), isEmpty);
+    ink.dispose();
+    await tester.pump();
+  }, variant: TargetPlatformVariant({TargetPlatform.windows}));
+
+  for (final payload in [<Object?>[[.2]], [[double.nan, .3, .5, 0]], [[.2, .3, 2, 0]]]) {
+    testWidgets('malformed native samples preserve fallback ink: $payload', (tester) async {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'begin') return true;
+        if (call.method == 'freeze') return payload;
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+      final ink = WindowsWetInk();
+      await begin(ink);
+      await ink.finish(onSamples: (_) => fail('Invalid native data replaced a valid stroke'));
+      await tester.pump();
+      ink.dispose();
+      await tester.pump();
+    }, variant: TargetPlatformVariant({TargetPlatform.windows}));
+  }
+
   testWidgets('late acceptance cannot revive a finished or disposed stroke', (tester) async {
     final replies = <Completer<bool>>[];
     final calls = <MethodCall>[];
@@ -89,7 +161,7 @@ void main() {
     final ink = WindowsWetInk();
     final first = begin(ink);
     await tester.idle();
-    ink.finish();
+    await ink.finish();
     final second = begin(ink);
     await tester.idle();
     replies[1].complete(true);
@@ -100,7 +172,7 @@ void main() {
     await tester.pump();
     final starts = calls.where((c) => c.method == 'begin').toList();
     expect(calls.singleWhere((c) => c.method == 'retire').arguments, (starts.first.arguments as Map)['token']);
-    ink.finish();
+    await ink.finish();
     final third = begin(ink);
     await tester.idle();
     ink.dispose();
@@ -108,7 +180,8 @@ void main() {
     await third;
     expect(ink.visible, isFalse);
     await tester.pump();
-    expect(calls.where((c) => c.method == 'discard'), hasLength(1));
+    expect(calls.where((c) => c.method == 'discard').map((c) => c.arguments).toSet(),
+      containsAll(calls.where((c) => c.method == 'begin').map((c) => (c.arguments as Map)['token'])));
   }, variant: TargetPlatformVariant({TargetPlatform.windows}));
 
   testWidgets('device loss restores Flutter ink and stale failures are ignored', (tester) async {
@@ -121,7 +194,7 @@ void main() {
     final ink = WindowsWetInk();
     await begin(ink);
     final oldToken = token!;
-    ink.finish();
+    await ink.finish();
     await begin(ink);
     Future<void> nativeCall(String method, int id) {
       final reply = Completer<void>();
@@ -131,6 +204,10 @@ void main() {
       return reply.future;
     }
     await tester.pumpAndSettle();
+    await nativeCall('requestFrame', oldToken);
+    expect(tester.binding.hasScheduledFrame, isTrue);
+    await tester.pumpAndSettle();
+    await nativeCall('retired', oldToken);
     await nativeCall('requestFrame', oldToken);
     expect(tester.binding.hasScheduledFrame, isFalse);
     await nativeCall('requestFrame', token!);

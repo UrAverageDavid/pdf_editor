@@ -86,13 +86,21 @@ class StrokeSmoother {
 class CommittedInk extends StatefulWidget {
   const CommittedInk({super.key, required this.editor, required this.page,
     required this.pageWidth, this.hidden = const {},
-    this.surface = InkSurface.page, this.referenceSize});
+    this.surface = InkSurface.page, this.referenceSize, this.allowRaster = true,
+    this.documentSize, this.visibleRect, this.physicalOrigin});
   final EditorController editor;
   final int page;
   final double pageWidth;
   final Set<String> hidden;
   final InkSurface surface;
   final Size? referenceSize;
+  final bool allowRaster;
+  /// Unzoomed PDF page size; notes use the same reference as their PDF page.
+  final Size? documentSize;
+  /// Visible portion of this surface in local logical pixels.
+  final Rect? visibleRect;
+  /// Surface origin in device pixels, used to align raster tiles without blur.
+  final Offset? physicalOrigin;
 
   @override
   State<CommittedInk> createState() => _CommittedInkState();
@@ -112,7 +120,10 @@ class _CommittedInkState extends State<CommittedInk> {
   Widget build(BuildContext context) => CustomPaint(painter: CommittedInkPainter(
     widget.editor, widget.page, widget.pageWidth, hidden: widget.hidden,
     surface: widget.surface, referenceSize: widget.referenceSize, cache: _cache,
-    devicePixelRatio: MediaQuery.maybeDevicePixelRatioOf(context) ?? View.of(context).devicePixelRatio));
+    documentSize: widget.documentSize, visibleRect: widget.visibleRect,
+    physicalOrigin: widget.physicalOrigin,
+    devicePixelRatio: widget.allowRaster
+      ? MediaQuery.maybeDevicePixelRatioOf(context) ?? View.of(context).devicePixelRatio : null));
 
   @override
   void dispose() { _cache.dispose(); super.dispose(); }
@@ -130,8 +141,18 @@ class CommittedInkCache {
   ui.Image? _image;
   Size? _surfaceSize;
   Size? _imageSize;
+  double? _rasterDpr;
   List<InkStroke> _rasterStrokes = const [];
   bool _rasterFailed = false;
+  final _tiles = <(int, int), ui.Image>{};
+  Object? _tileConfiguration;
+  bool _tileRasterFailed = false;
+  static const _tileSide = 512;
+  static const _tilePixels = (_tileSide + 2) * (_tileSide + 2);
+
+  @visibleForTesting
+  int get debugTileCount => _tiles.length;
+
   // Bound GPU memory even at extreme zoom or on very wide note surfaces.
   static const maxRasterPixels = 2000000;
   static const maxRasterDimension = 4096;
@@ -148,10 +169,12 @@ class CommittedInkCache {
   ui.Image? get debugImage => _image;
 
   void paint(Canvas canvas, Size size, double pageWidth, List<InkStroke> strokes,
-      {Size? surfaceSize, double? devicePixelRatio}) {
-    if (_size != size || _pageWidth != pageWidth) {
+      {Size? surfaceSize, double? devicePixelRatio, Size? documentSize,
+      Rect? visibleRect, Offset? physicalOrigin}) {
+    final geometrySize = documentSize ?? size;
+    if (_size != geometrySize || _pageWidth != pageWidth) {
       dispose();
-      _size = size;
+      _size = geometrySize;
       _pageWidth = pageWidth;
     }
     final indices = <InkStroke, int>{
@@ -191,20 +214,139 @@ class CommittedInkCache {
       final recorder = ui.PictureRecorder();
       final recording = Canvas(recorder);
       for (final stroke in group) {
-        _paintCommittedStroke(recording, size, pageWidth, stroke);
+        _paintCommittedStroke(recording, geometrySize, pageWidth, stroke);
       }
-      next.add(_CommittedInkChunk(group, points, recorder.endRecording()));
+      next.add(_CommittedInkChunk(group, points, recorder.endRecording(),
+        _strokeBounds(group, geometrySize)));
       assert(() { debugRecordedStrokes += group.length; return true; }());
       start = end;
     }
+    if (!listEquals(next, _chunks)) _disposeTiles();
     final retained = next.toSet();
     for (final chunk in _chunks) {
       if (!retained.contains(chunk)) chunk.picture.dispose();
     }
     _chunks = next;
+    if (documentSize != null) {
+      if (_chunks.isEmpty) return;
+      final clip = (visibleRect ?? (Offset.zero & (surfaceSize ?? size)))
+        .intersect(Offset.zero & (surfaceSize ?? size));
+      if (clip.isEmpty) return;
+      if (devicePixelRatio != null && physicalOrigin != null &&
+          _paintTiles(canvas, size, geometrySize, clip, devicePixelRatio, physicalOrigin)) return;
+      _drawGeometry(canvas, size, geometrySize, clip);
+      return;
+    }
     if (devicePixelRatio != null && _paintRaster(canvas, surfaceSize ?? size,
         size, pageWidth, strokes, devicePixelRatio)) return;
     for (final chunk in _chunks) { canvas.drawPicture(chunk.picture); }
+  }
+
+  // Bounds include the widest pressure response, round caps and antialiasing.
+  // Midpoint curves lie inside the convex hull of their samples.
+  static Rect _strokeBounds(List<InkStroke> strokes, Size size) {
+    Rect? bounds;
+    for (final stroke in strokes) {
+      if (stroke.points.isEmpty) continue;
+      var left = double.infinity, top = double.infinity;
+      var right = double.negativeInfinity, bottom = double.negativeInfinity;
+      for (final point in stroke.points) {
+        final p = point.inSize(size);
+        left = math.min(left, p.dx); top = math.min(top, p.dy);
+        right = math.max(right, p.dx); bottom = math.max(bottom, p.dy);
+      }
+      final rect = Rect.fromLTRB(left, top, right, bottom).inflate(stroke.width * 2 + 2);
+      bounds = bounds == null ? rect : bounds.expandToInclude(rect);
+    }
+    return bounds ?? Rect.zero;
+  }
+
+  void _drawGeometry(Canvas canvas, Size size, Size geometry, Rect clip) {
+    final sx = size.width / geometry.width, sy = size.height / geometry.height;
+    final documentClip = Rect.fromLTRB(clip.left / sx, clip.top / sy,
+      clip.right / sx, clip.bottom / sy);
+    canvas.save();
+    canvas.clipRect(clip, doAntiAlias: false);
+    canvas.scale(sx, sy);
+    for (final chunk in _chunks) {
+      if (chunk.bounds.overlaps(documentClip)) canvas.drawPicture(chunk.picture);
+    }
+    canvas.restore();
+  }
+
+  bool _paintTiles(Canvas canvas, Size size, Size geometry, Rect clip,
+      double dpr, Offset origin) {
+    if (!dpr.isFinite || dpr <= 0 || size.isEmpty) return false;
+    // Align tiles to the actual device pixel grid, including fractional page
+    // positions. A one-pixel gutter prevents filtering seams between tiles.
+    final phase = Offset(origin.dx - origin.dx.floor(), origin.dy - origin.dy.floor());
+    final configuration = (size, dpr, phase);
+    if (_tileConfiguration != configuration) {
+      _disposeTiles();
+      _tileConfiguration = configuration;
+    }
+    if (_tileRasterFailed) return false;
+    final left = ((clip.left * dpr + phase.dx) / _tileSide).floor();
+    final top = ((clip.top * dpr + phase.dy) / _tileSide).floor();
+    final right = ((clip.right * dpr + phase.dx) / _tileSide).ceil();
+    final bottom = ((clip.bottom * dpr + phase.dy) / _tileSide).ceil();
+    canvas.save();
+    canvas.clipRect(clip, doAntiAlias: false);
+    try {
+      for (var y = top; y < bottom; y++) {
+        for (var x = left; x < right; x++) {
+          final rect = Rect.fromLTWH((x * _tileSide - phase.dx) / dpr,
+            (y * _tileSide - phase.dy) / dpr, _tileSide / dpr, _tileSide / dpr);
+          final padded = rect.inflate(1 / dpr);
+          final key = (x, y);
+          var image = _tiles.remove(key);
+          if (image == null && !_tileRasterFailed) {
+            final recorder = ui.PictureRecorder();
+            final recording = Canvas(recorder)..scale(dpr)..translate(-padded.left, -padded.top);
+            _drawGeometry(recording, size, geometry, padded);
+            final picture = recorder.endRecording();
+            try {
+              image = picture.toImageSync(_tileSide + 2, _tileSide + 2);
+            } on ui.PictureRasterizationException {
+              _tileRasterFailed = true;
+            } finally {
+              picture.dispose();
+            }
+            assert(() { debugRasterizations++; return true; }());
+          }
+          if (image == null) {
+            _drawGeometry(canvas, size, geometry, rect.intersect(clip));
+            continue;
+          }
+          _tiles[key] = image;
+          while (_tiles.length * _tilePixels > maxRasterPixels) {
+            _tiles.remove(_tiles.keys.first)!.dispose();
+          }
+          canvas.save();
+          canvas.clipRect(rect, doAntiAlias: false);
+          try {
+            canvas.drawImageRect(image, const Rect.fromLTWH(0, 0, _tileSide + 2, _tileSide + 2),
+              padded, Paint()..filterQuality = FilterQuality.none);
+          } on ui.PictureRasterizationException {
+            _tileRasterFailed = true;
+            _tiles.remove(key)?.dispose();
+            _drawGeometry(canvas, size, geometry, rect.intersect(clip));
+          } finally {
+            canvas.restore();
+          }
+        }
+      }
+      return true;
+    } finally {
+      canvas.restore();
+    }
+  }
+
+  void _disposeTiles() {
+    for (final image in _tiles.values) { image.dispose(); }
+    _tiles.clear();
+    _tileConfiguration = null;
+    _tileRasterFailed = false;
   }
 
   /// A retained Picture is still a list of vector commands. Cache the final
@@ -217,12 +359,30 @@ class CommittedInkCache {
       return true;
     }
     if (!surface.width.isFinite || !surface.height.isFinite || !dpr.isFinite || dpr <= 0) return false;
-    final scale = math.min(dpr, math.min(
-      math.sqrt(maxRasterPixels / (surface.width * surface.height)),
-      maxRasterDimension / math.max(surface.width, surface.height)));
-    final pixels = Size(math.max(1, (surface.width * scale).floor()).toDouble(),
-      math.max(1, (surface.height * scale).floor()).toDouble());
-    final sameSize = _surfaceSize == surface && _imageSize == pixels;
+    final transform = canvas.getTransform();
+    // Resampling an antialiased bitmap at a fractional device-pixel origin
+    // softens thin strokes. Vector replay handles that pixel phase directly.
+    if ((transform[12] - transform[12].round()).abs() > .001 ||
+        (transform[13] - transform[13].round()).abs() > .001) return false;
+    final physicalSize = surface * dpr;
+    if ((physicalSize.width - physicalSize.width.round()).abs() > .001 ||
+        (physicalSize.height - physicalSize.height.round()).abs() > .001) {
+      _disposeRaster();
+      return false;
+    }
+    // The budget limits caching, never ink resolution. Large/zoomed surfaces
+    // use the retained vector pictures instead of stretching a smaller bitmap.
+    final pixels = Size(math.max(1, physicalSize.width.roundToDouble()),
+      math.max(1, physicalSize.height.roundToDouble()));
+    if (pixels.width * pixels.height > maxRasterPixels ||
+        math.max(pixels.width, pixels.height) > maxRasterDimension) {
+      _disposeRaster();
+      return false;
+    }
+    // Keep exactly dpr pixels per logical unit. Fractional physical bounds use
+    // vector replay above so clipping cannot introduce a second coverage pass.
+    final rasterRect = Offset.zero & (pixels / dpr);
+    final sameSize = _surfaceSize == surface && _imageSize == pixels && _rasterDpr == dpr;
     final sameStrokes = listEquals(_rasterStrokes, strokes);
     if (!sameSize || !sameStrokes) {
       _rasterFailed = false;
@@ -232,10 +392,10 @@ class CommittedInkCache {
           (i) => identical(strokes[i], _rasterStrokes[i]));
       final recorder = ui.PictureRecorder();
       final recording = Canvas(recorder);
-      recording.scale(pixels.width / surface.width, pixels.height / surface.height);
+      recording.scale(dpr);
       if (appendOnly) {
         // Keep old ink at exactly the same pixel grid; rasterize only new ink.
-        recording.drawImageRect(_image!, Offset.zero & pixels, Offset.zero & surface,
+        recording.drawImageRect(_image!, Offset.zero & pixels, rasterRect,
           Paint()..filterQuality = FilterQuality.none);
         for (final stroke in strokes.skip(_rasterStrokes.length)) {
           _paintCommittedStroke(recording, reference, pageWidth, stroke);
@@ -261,11 +421,12 @@ class CommittedInkCache {
       _image = nextImage;
       _surfaceSize = surface;
       _imageSize = pixels;
+      _rasterDpr = dpr;
       _rasterStrokes = List.of(strokes);
     }
     if (_rasterFailed || _image == null) return false;
     try {
-      canvas.drawImageRect(_image!, Offset.zero & pixels, Offset.zero & surface,
+      canvas.drawImageRect(_image!, Offset.zero & pixels, rasterRect,
         Paint()..filterQuality = FilterQuality.low);
       return true;
     } on ui.PictureRasterizationException {
@@ -283,11 +444,13 @@ class CommittedInkCache {
     _image = null;
     _surfaceSize = null;
     _imageSize = null;
+    _rasterDpr = null;
     _rasterStrokes = const [];
     _rasterFailed = false;
   }
 
   void dispose() {
+    _disposeTiles();
     _disposeRaster();
     for (final chunk in _chunks) { chunk.picture.dispose(); }
     _chunks = [];
@@ -297,10 +460,11 @@ class CommittedInkCache {
 }
 
 class _CommittedInkChunk {
-  const _CommittedInkChunk(this.strokes, this.pointCount, this.picture);
+  const _CommittedInkChunk(this.strokes, this.pointCount, this.picture, this.bounds);
   final List<InkStroke> strokes;
   final int pointCount;
   final ui.Picture picture;
+  final Rect bounds;
 }
 
 void _paintCommittedStroke(Canvas canvas, Size size, double pageWidth, InkStroke stroke) {
@@ -311,7 +475,8 @@ void _paintCommittedStroke(Canvas canvas, Size size, double pageWidth, InkStroke
 
 class CommittedInkPainter extends CustomPainter {
   CommittedInkPainter(this.editor, this.page, this.pageWidth, {this.hidden = const {},
-    this.surface = InkSurface.page, this.referenceSize, this.cache, this.devicePixelRatio})
+    this.surface = InkSurface.page, this.referenceSize, this.cache, this.devicePixelRatio,
+    this.documentSize, this.visibleRect, this.physicalOrigin})
       : super(repaint: editor.inkSignal(page, surface));
   final EditorController editor;
   final int page;
@@ -321,6 +486,9 @@ class CommittedInkPainter extends CustomPainter {
   final Size? referenceSize;
   final CommittedInkCache? cache;
   final double? devicePixelRatio;
+  final Size? documentSize;
+  final Rect? visibleRect;
+  final Offset? physicalOrigin;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -329,7 +497,8 @@ class CommittedInkPainter extends CustomPainter {
     final reference = referenceSize ?? size;
     if (cache != null) {
       cache!.paint(canvas, reference, pageWidth, strokes.toList(),
-        surfaceSize: size, devicePixelRatio: devicePixelRatio);
+        surfaceSize: size, devicePixelRatio: devicePixelRatio, documentSize: documentSize,
+        visibleRect: visibleRect, physicalOrigin: physicalOrigin);
     } else {
       for (final stroke in strokes) { _paintCommittedStroke(canvas, reference, pageWidth, stroke); }
     }
@@ -339,7 +508,8 @@ class CommittedInkPainter extends CustomPainter {
   bool shouldRepaint(CommittedInkPainter old) => old.editor != editor ||
       old.page != page || old.pageWidth != pageWidth || !setEquals(old.hidden, hidden) ||
       old.surface != surface || old.referenceSize != referenceSize || old.cache != cache ||
-      old.devicePixelRatio != devicePixelRatio;
+      old.devicePixelRatio != devicePixelRatio || old.documentSize != documentSize ||
+      old.visibleRect != visibleRect || old.physicalOrigin != physicalOrigin;
 }
 
 class ActiveInk extends ChangeNotifier {

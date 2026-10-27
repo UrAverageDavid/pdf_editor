@@ -39,11 +39,17 @@ class _PdfrxDocument implements PdfDocumentHandle {
     final page = document.pages[pageIndex];
     final fullWidth = page.width * scale;
     final fullHeight = page.height * scale;
+    // Normalizing pixel-aligned tile bounds can introduce tiny rounding errors.
+    // Do not turn pixel 512 into 511 or add a spurious extra pixel to a tile.
+    double snap(double value) => (value - value.round()).abs() < 1e-7
+      ? value.roundToDouble() : value;
+    final left = snap(normalizedRegion.left * fullWidth).floor();
+    final top = snap(normalizedRegion.top * fullHeight).floor();
     final rendered = await page.render(
-      x: (normalizedRegion.left * fullWidth).floor(),
-      y: (normalizedRegion.top * fullHeight).floor(),
-      width: (normalizedRegion.width * fullWidth).ceil(),
-      height: (normalizedRegion.height * fullHeight).ceil(),
+      x: left,
+      y: top,
+      width: snap(normalizedRegion.right * fullWidth).ceil() - left,
+      height: snap(normalizedRegion.bottom * fullHeight).ceil() - top,
       fullWidth: fullWidth, fullHeight: fullHeight,
     );
     if (rendered == null) throw StateError('Page rendering was cancelled');

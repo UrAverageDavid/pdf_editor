@@ -49,17 +49,26 @@ WetInk::WetInk(HWND window, flutter::BinaryMessenger* messenger, NextFrame next_
     } else if (call.method_name() == "begin") {
       const auto* args = call.arguments() ? std::get_if<EncodableMap>(call.arguments()) : nullptr;
       const bool accepted = args && Begin(*args);
-      if (!accepted) Fail();
+      if (!accepted) { if (token_) Fail(); else Clear(); }
       result->Success(EncodableValue(accepted));
     } else if (call.method_name() == "freeze") {
-      if (call.arguments() && Number(*call.arguments()) == static_cast<double>(token_)) Freeze();
-      result->Success();
+      const auto token = call.arguments() ? static_cast<int64_t>(Number(*call.arguments())) : 0;
+      if (token && token == token_) Archive();
+      const auto it = completed_.find(token);
+      if (it != completed_.end()) result->Success(it->second.samples);
+      else result->Success();
     } else if (call.method_name() == "retire") {
       const auto token = call.arguments() ? static_cast<int64_t>(Number(*call.arguments())) : 0;
-      if (token && token == token_) Retire(token);
+      if (completed_.count(token)) Retire(token);
+      else channel_->InvokeMethod("retired", std::make_unique<EncodableValue>(token));
+      result->Success();
+    } else if (call.method_name() == "invalidate") {
+      Cancel();
       result->Success();
     } else if (call.method_name() == "discard") {
-      if (call.arguments() && Number(*call.arguments()) == static_cast<double>(token_)) Cancel();
+      const auto token = call.arguments() ? static_cast<int64_t>(Number(*call.arguments())) : 0;
+      if (token && token == token_) Clear();
+      Discard(token);
       result->Success();
     } else {
       result->NotImplemented();
@@ -74,17 +83,62 @@ WetInk::~WetInk() {
   if (window_) RemoveWindowSubclass(window_, WindowProc, reinterpret_cast<UINT_PTR>(this));
 }
 
+flutter::EncodableValue WetInk::Samples() const {
+  flutter::EncodableList result;
+  result.reserve(points_.size());
+  const double first_time = points_.empty() ? 0 : points_.front().time;
+  for (const auto& point : points_) {
+    result.emplace_back(flutter::EncodableList{
+      EncodableValue(static_cast<double>((point.x - reference_x_) / reference_width_)),
+      EncodableValue(static_cast<double>((point.y - reference_y_) / reference_height_)),
+      EncodableValue(static_cast<double>(point.pressure)),
+      EncodableValue(static_cast<int64_t>(std::llround((point.time - first_time) * 1000000)))});
+  }
+  return EncodableValue(std::move(result));
+}
+
+void WetInk::Archive() {
+  if (!token_) return;
+  Freeze();
+  if (!token_) return;  // Device loss during the final paint.
+  completed_.emplace(token_, CompletedStroke{std::move(visual_), std::move(surface_), Samples(),
+      static_cast<uint64_t>(surface_width_) * surface_height_});
+  opacity_.Reset();
+  // Completed visuals remain children of root_. Clear only the active state.
+  Clear();
+}
+
+void WetInk::Discard(int64_t token) {
+  const auto it = completed_.find(token);
+  if (it == completed_.end()) return;
+  if (root_ && it->second.visual) root_->RemoveVisual(it->second.visual.Get());
+  completed_.erase(it);
+  if (composition_) composition_->Commit();
+}
+
 void WetInk::Retire(int64_t token) {
-  retire_requested_ = token;
-  // Flutter's wrapper only supports one next-frame callback. Do not replace
-  // one whose raster completion may already be queued on the platform thread.
-  if (frame_callback_pending_) return;
-  frame_callback_pending_ = true;
+  handoff_.Request(token);
+  ArmRetirement();
+}
+
+void WetInk::ArmRetirement() {
+  // The engine owns one callback slot. Serialize retirements, including strokes
+  // completed while an older callback is already queued on the platform thread.
+  auto token = handoff_.Arm();
+  // Disposed editors no longer service requestFrame. Missing visuals need no
+  // presentation barrier; drain those tokens without blocking the next owner.
+  while (token && !completed_.count(token)) {
+    if (handoff_.Complete(token))
+      channel_->InvokeMethod("retired", std::make_unique<EncodableValue>(token));
+    token = handoff_.Arm();
+  }
+  if (!token) return;
   const auto alive = alive_;
   const auto window = window_;
   next_frame_([alive, window, token] {
     if (alive->load()) PostMessage(window, kRetireInk, static_cast<WPARAM>(token), 0);
   });
+  channel_->InvokeMethod("requestFrame", std::make_unique<EncodableValue>(token));
 }
 
 bool WetInk::Initialize() {
@@ -102,8 +156,8 @@ bool WetInk::Initialize() {
   ComPtr<IDCompositionDesktopDevice> composition;
   if (FAILED(DCompositionCreateDevice2(d2d.Get(), IID_PPV_ARGS(&composition))) ||
       FAILED(composition->CreateTargetForHwnd(target_window_, TRUE, &target_)) ||
-      FAILED(composition->CreateVisual(&visual_)) ||
-      FAILED(target_->SetRoot(visual_.Get()))) return false;
+      FAILED(composition->CreateVisual(&root_)) ||
+      FAILED(target_->SetRoot(root_.Get()))) return false;
   const auto properties = D2D1::StrokeStyleProperties(
       D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
       D2D1_LINE_JOIN_ROUND);
@@ -113,10 +167,16 @@ bool WetInk::Initialize() {
 }
 
 bool WetInk::Begin(const EncodableMap& args) {
+  Archive();
   Clear();
+  // Bound queued GPU surfaces without ever removing an unacknowledged stroke.
+  // Flutter renders new contacts if the platform outruns raster presentation.
+  if (completed_.size() >= 4) return false;
   const auto* bounds = std::get_if<flutter::EncodableList>(&Field(args, "clip"));
   const auto* type = std::get_if<std::string>(&Field(args, "type"));
-  if (!contact_ || pending_.empty() || !bounds || bounds->size() != 4 || !type) return false;
+  const auto* reference = std::get_if<flutter::EncodableList>(&Field(args, "reference"));
+  if (pending_.empty() || !bounds || bounds->size() != 4 || !type ||
+      !reference || reference->size() != 4) return false;
   POINT origin{};
   MapWindowPoints(window_, target_window_, &origin, 1);
   const float origin_x = static_cast<float>(origin.x);
@@ -132,10 +192,25 @@ bool WetInk::Begin(const EncodableMap& args) {
       static_cast<float>(Number((*bounds)[1])) + origin_y,
       static_cast<float>(Number((*bounds)[2])) + origin_x,
       static_cast<float>(Number((*bounds)[3])) + origin_y);
-  if (!Initialize()) return false;
+  reference_x_ = static_cast<float>(Number((*reference)[0])) + origin_x;
+  reference_y_ = static_cast<float>(Number((*reference)[1])) + origin_y;
+  reference_width_ = static_cast<float>(Number((*reference)[2]));
+  reference_height_ = static_cast<float>(Number((*reference)[3]));
+  if (!std::isfinite(reference_width_) || !std::isfinite(reference_height_) ||
+      reference_width_ <= 0 || reference_height_ <= 0) return false;
   RECT client{};
   GetClientRect(target_window_, &client);
   if (client.right <= 0 || client.bottom <= 0) return false;
+  uint64_t pixels = static_cast<uint64_t>(client.right) * static_cast<uint64_t>(client.bottom);
+  for (const auto& entry : completed_) {
+    if (entry.second.surface) pixels += entry.second.pixels;
+  }
+  // At most 128 MiB of composition surfaces, plus the reusable stable bitmap.
+  if (pixels > 32 * 1024 * 1024) return false;
+  token_ = static_cast<int64_t>(Number(Field(args, "token")));
+  if (!token_ || !Initialize()) return false;
+  if (FAILED(composition_->CreateVisual(&visual_)) ||
+      FAILED(root_->AddVisual(visual_.Get(), TRUE, nullptr))) return false;
   if (!EnsureBuffers(static_cast<UINT>(client.right), static_cast<UINT>(client.bottom))) return false;
   const auto color = static_cast<uint32_t>(Number(Field(args, "color")));
   color_ = D2D1::ColorF(color & 0xffffff, 1);
@@ -153,8 +228,8 @@ bool WetInk::Begin(const EncodableMap& args) {
   context_->BeginDraw();
   context_->Clear(D2D1::ColorF(0, 0.0f));
   if (FAILED(context_->EndDraw())) return false;
-  token_ = static_cast<int64_t>(Number(Field(args, "token")));
   for (const auto& point : pending_) Append(point);
+  if (!contact_) frozen_ = true;
   ArmPredictionExpiry();
   return Paint();
 }
@@ -167,8 +242,9 @@ bool WetInk::EnsureBuffers(UINT width, UINT height) {
   ComPtr<IDCompositionSurface> surface;
   const auto properties = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET,
       D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
-  if (FAILED(context_->CreateBitmap(D2D1::SizeU(width, height), nullptr, 0, properties, &stable)) ||
-      FAILED(composition_->CreateSurface(width, height, DXGI_FORMAT_B8G8R8A8_UNORM,
+  if (stable_ && width == surface_width_ && height == surface_height_) stable = stable_;
+  else if (FAILED(context_->CreateBitmap(D2D1::SizeU(width, height), nullptr, 0, properties, &stable))) return false;
+  if (FAILED(composition_->CreateSurface(width, height, DXGI_FORMAT_B8G8R8A8_UNORM,
           DXGI_ALPHA_MODE_PREMULTIPLIED, &surface))) return false;
   stable_ = std::move(stable);
   surface_ = std::move(surface);
@@ -279,7 +355,7 @@ void WetInk::Segment(ID2D1DeviceContext* context, const ink::StrokeView& points,
   sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(D2D1::Point2F(a.x, a.y), end));
   sink->EndFigure(D2D1_FIGURE_END_OPEN);
   if (SUCCEEDED(sink->Close())) context->DrawGeometry(path.Get(), brush_.Get(),
-      std::max(.1f, (Width(points, index - 1) + Width(points, index)) / 2), stroke_style_.Get());
+      std::max(.1f * dpr_, (Width(points, index - 1) + Width(points, index)) / 2), stroke_style_.Get());
 }
 
 bool WetInk::Paint() {
@@ -306,7 +382,7 @@ bool WetInk::Paint() {
   context_->SetTarget(stable_.Get());
   context_->BeginDraw();
   const size_t stable_end = type_ == "highlighter" ? points_.size() :
-      points_.size() > 8 ? points_.size() - 8 : 1;
+      points_.size() > 12 ? points_.size() - 8 : 1;
   const ink::StrokeView confirmed(points_);
   while (next_segment_ < stable_end) Segment(context_.Get(), confirmed, next_segment_++);
   if (FAILED(context_->EndDraw())) return false;
@@ -367,7 +443,8 @@ void WetInk::ReadPoints(UINT32 pointer, bool ending) {
     ScreenToClient(target_window_, &position);
     const double time = info.PerformanceCount ?
         static_cast<double>(info.PerformanceCount) / static_cast<double>(frequency.QuadPart) : info.dwTime / 1000.0;
-    const float pressure = ending ? (points_.empty() ? .75f : points_.back().pressure) :
+    const float pressure = !(info.pointerFlags & POINTER_FLAG_INCONTACT) ?
+        (points_.empty() ? .75f : points_.back().pressure) :
         (it->penMask & PEN_MASK_PRESSURE) ? std::clamp(static_cast<float>(it->pressure) / 1024.0f, .05f, 1.0f) : .75f;
     const Point point{static_cast<float>(position.x), static_cast<float>(position.y), pressure, time};
     if (token_) { if (!frozen_) Append(point); }
@@ -385,14 +462,15 @@ void WetInk::Clear() noexcept {
   predictor_.Reset();
   prediction_ = painted_prediction_ = {};
   token_ = 0;
-  retire_requested_ = 0;
   frozen_ = false;
   clipped_ = false;
   surface_initialized_ = false;
   points_.clear();
   next_segment_ = 1;
   vx_ = vy_ = fast_vx_ = fast_vy_ = 0;
-  if (visual_) visual_->SetContent(nullptr);
+  if (root_ && visual_) root_->RemoveVisual(visual_.Get());
+  visual_.Reset();
+  opacity_.Reset();
   if (composition_) composition_->Commit();
   if (context_) context_->SetTarget(nullptr);
 }
@@ -403,14 +481,24 @@ void WetInk::Fail() noexcept {
   // Drop the device as well: the next contact can recover after device loss.
   ReleaseBuffers();
   brush_.Reset(); opacity_.Reset();
-  visual_.Reset(); target_.Reset(); composition_.Reset();
+  for (auto& entry : completed_) { entry.second.visual.Reset(); entry.second.surface.Reset(); }
+  visual_.Reset(); root_.Reset(); target_.Reset(); composition_.Reset();
   context_.Reset(); factory_.Reset(); stroke_style_.Reset();
   if (token) channel_->InvokeMethod("failed", std::make_unique<EncodableValue>(token));
 }
 
 void WetInk::Cancel() noexcept {
   const auto token = token_;
+  Archive();
   Clear();
+  // View changes invalidate screen-space overlays, but retain confirmed samples
+  // until Dart's freeze request arrives (focus loss can precede that request).
+  for (auto& entry : completed_) {
+    if (root_ && entry.second.visual) root_->RemoveVisual(entry.second.visual.Get());
+    entry.second.visual.Reset();
+    entry.second.surface.Reset();
+  }
+  if (composition_) composition_->Commit();
   // Routine cancellation should not destroy reusable GPU resources. Actual
   // graphics failures use Fail(), which also releases the device and buffers.
   if (token) channel_->InvokeMethod("failed", std::make_unique<EncodableValue>(token));
@@ -438,19 +526,18 @@ LRESULT CALLBACK WetInk::WindowProc(HWND window, UINT message, WPARAM wparam,
     return 0;
   }
   if (message == kRetireInk) {
-    self->frame_callback_pending_ = false;
-    if (static_cast<int64_t>(wparam) == self->token_) self->Clear();
-    else if (self->retire_requested_ && self->retire_requested_ == self->token_) {
-      self->Retire(self->token_);
-      // A rapid second stroke may have submitted its frame before the older
-      // callback was drained. Request a fresh frame after arming its callback.
-      self->channel_->InvokeMethod("requestFrame", std::make_unique<EncodableValue>(self->token_));
+    const auto retired = self->handoff_.Complete(static_cast<int64_t>(wparam));
+    if (retired) {
+      self->Discard(retired);
+      self->channel_->InvokeMethod("retired", std::make_unique<EncodableValue>(retired));
     }
+    self->ArmRetirement();
     return 0;
   }
   if (message == WM_POINTERDOWN) {
     POINTER_PEN_INFO info{};
     if (GetPointerPenInfo(pointer, &info) && !(info.penFlags & (PEN_FLAG_INVERTED | PEN_FLAG_ERASER))) {
+      self->Archive();
       self->Clear();
       self->pointer_ = pointer;
       self->contact_ = true;

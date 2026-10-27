@@ -94,18 +94,25 @@ On Windows builds, stylus contact uses a native Direct2D/DirectComposition wet-i
 preview over the document. Native pointer messages (including coalesced pen history)
 update this surface directly, without a Dart round trip for every sample. The Windows
 runner explicitly keeps Dart UI work on a separate thread from native input dispatch.
-The preview supports the pen presets, pressure, page clipping, and translucent highlights;
-mouse drawing and erasing continue through Flutter. Flutter still collects the authoritative
-stroke samples for saving, undo, shape detection, and export. Native geometry follows the
-same filter and nib rules, but its denser input history can produce small differences at
-handoff. This is a custom native renderer, not a hosted Windows Ink `InkPresenter`.
+Opaque pen presets use the native preview. Highlighters and translucent pens stay in
+Flutter (including prediction), avoiding the opacity flash that overlapping compositor
+surfaces would cause. Mouse drawing and erasing also use Flutter. On lift, the bridge
+transfers the native renderer's confirmed, filtered samples in document coordinates;
+predicted samples are excluded. These replace the fallback samples without adding an undo
+step. Late replies update undo/redo and erasure history without resurrecting removed ink.
+Save, export, and backup wait for reconciliation; unavailable or timed-out native input
+keeps the complete Flutter fallback. This is a custom renderer, not a Windows Ink `InkPresenter`.
 
-If native graphics initialization fails or a device is lost, drawing falls back to Flutter.
-The preview freezes on lift and is retired after the committed Flutter frame is submitted
-and a subsequent engine frame has been drawn. Gesture tokens keep old callbacks from
-clearing a newer stroke. Cancellation, focus loss, resize/DPI changes, and document disposal
-clear the native surface. Other platforms retain the existing Flutter renderer.
-The Windows preview retains its graphics buffers between strokes, clearing their contents
+Completed native strokes retain independent composition surfaces while the next contact
+starts. Retirement is queued by gesture token after sample reconciliation and Flutter
+frame submission. A second engine-frame callback guards against an older frame already
+in flight. This is a frame-ordering safeguard, not an atomic DWM presentation fence;
+physical Windows validation remains necessary. At most four completed strokes are retained,
+with a 32-million-pixel composition-surface budget; new contacts fall back to Flutter if
+that budget is exhausted. Undo, scrolling, focus loss, resize/DPI changes, and document
+switching remove stale screen-space overlays. Device loss falls back to Flutter.
+Other platforms retain the Flutter renderer.
+The Windows preview reuses its stable drawing bitmap between strokes, clearing its contents
 at each pen-down. Resize/DPI changes release the buffers; device failures also recreate
 the graphics device. Color and opacity are refreshed for each stroke.
 
@@ -256,14 +263,19 @@ and PDF images have separate repaint boundaries. PDF and margin ink have indepen
 signals, and display sizes are calculated independently of scroll offsets so moving a page
 does not invalidate its retained layers. Saved ink caches ordered groups of up to 32 strokes
 with a soft 4096-point limit (individual strokes remain whole for highlighter opacity).
-Edits replace affected groups, zoom replaces their screen-space geometry, and unmounting a
-surface releases its pictures. Mounted saved-ink surfaces also retain a transparent raster
-image, so scrolling draws one image instead of replaying all stroke segments. Appending ink
-composites only new strokes onto the previous image; erasing, undo, and geometry changes
-rebuild the affected surface. Each image is capped at 2 million pixels (about 8 MiB in RGBA)
-and 4096 pixels per dimension, and is released on unmount. Very large/zoomed surfaces may
-therefore show softer ink; saved stroke coordinates remain unchanged. Rasterization failure
-falls back to vector ink. Thumbnail caches are separate from the main canvas.
+Edits replace affected groups. The document view records saved strokes in PDF coordinates,
+so zoom reuses those paths and changes only the canvas transform. Chunk bounds skip ink
+outside the visible viewport. During navigation, retained vectors draw at the current scale;
+after 120 ms without movement, visible 512-pixel ink tiles are rasterized at the full device
+pixel ratio. Fractional page origins are included in the tile grid, and one-pixel gutters
+avoid seams. The tile cache retains at most 2 million pixels per surface; it never reduces
+ink resolution to fit a whole page. Edits invalidate tiles, while unchanged geometry remains
+reusable. Rasterization failure falls back to vectors. Thumbnail caches remain separate.
+Whole-page PDF previews retain their 2-million-pixel cap. Above that resolution, the viewer
+requests visible PDF tiles at the current zoom and device pixel ratio after navigation settles.
+Intermediate zoom steps do not request replacement previews or tiles for mounted pages.
+PDF tiles share the bounded render queue and cache; disposed tile requests are cancelled.
+Dense-page presentation still needs profiling on the target Windows device.
 Writing-space backgrounds, borders and clips are retained as a single surface during
 scrolling, including when no ink is present. Only margins intersecting the viewport are
 mounted; PDF neighbour prefetch remains unchanged. The document surface has its own repaint
@@ -310,7 +322,8 @@ Dart-side recording of long live strokes and saved-ink rasterization. The saved-
 compares retained vector commands against a retained image and waits for image readback;
 it includes raster work but does not measure Windows presentation or physical pen latency.
 Pixel comparisons cover saved-ink opacity, edits, erasing, undo/redo, zoom, DPR, and expanded
-note coordinates. Scroll regressions verify reuse of the same PDF/note ink images.
+note coordinates, including surfaces beyond the raster budget and fractional DPI/zoom.
+Scroll regressions verify retained PDF/note ink caches, including vector fallbacks.
 
 The predictor uses our own conservative velocity extrapolation, informed by
 [Windows Ink's adaptive prediction horizon](https://learn.microsoft.com/en-us/uwp/api/windows.ui.input.inking.inkmodelerattributes.predictiontime?view=winrt-26100).
@@ -325,13 +338,14 @@ cause temporary overshoot even though saved strokes remain accurate.
 Wet-ink bridge tests cover Windows-only activation, physical-coordinate conversion,
 native rejection/device failure, late replies, rapid successive strokes, disposal, and
 preservation of saved samples. These tests mock the native channel. The Windows C++
-predictor, preview sample isolation, and retraction bounds also have portable tests:
+predictor, preview sample isolation, retraction bounds, and queued retirement state also
+have portable tests:
 `clang++ -std=c++20 -Wall -Wextra -Werror tool/native_ink_test.cpp -o /tmp/native_ink_test`
 then `/tmp/native_ink_test`. The Direct2D/DirectComposition renderer itself cannot be
 compiled or exercised on macOS: build with
 `flutter build windows --release` on Windows, then test a physical pen at 100%, 150%,
 and 200% display scaling. Check rapid dots, long strokes, brush/fountain pressure,
-highlighter retracing and lift (including opacity during handoff), page boundaries,
+highlighter retracing and lift (no native handoff), page boundaries,
 growing writing space, zoom, Alt-Tab, window resize, and document switching. Compare
 successive strokes with different colors/presets to catch stale pixels from buffer reuse.
 Check that the predicted tip retracts on a pause, corner, and pen-up. Compare
@@ -345,8 +359,8 @@ This is the first working-slice implementation, **not the complete MVP**.
 1. Compile and run on Windows/Surface, validate ARM64 PDFium packaging, and fix integration issues.
 2. Add editable standard PDF Ink annotations as an alternative to the current flattened
    export, and validate the export/save dialog on Windows/Surface hardware.
-3. Add high-resolution tile rendering; this prototype caps whole-page resolution and may look
-   soft at high zoom. The engine already exposes `renderTile`.
+3. Profile high-resolution PDF and ink tiles on target devices, including dense handwriting,
+   rapid pinch gestures, and high-DPI displays.
 4. Add password entry for protected PDFs; currently the open failure is reported without
    discarding the current document. Improve missing/corrupt-file recovery UI.
 5. Add touch inertia, thumbnail selection/following, persisted reading position, and richer

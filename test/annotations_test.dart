@@ -10,6 +10,53 @@ import 'package:papertrail/features/document/app_document.dart';
 import 'helpers.dart';
 
 void main() {
+  test('native reconciliation preserves undo, redo and erase history', () {
+    final editor = EditorController(sampleDocument(), MemoryRepository());
+    addTearDown(editor.dispose);
+    final original = stroke('native');
+    final confirmed = InkStroke(id: original.id, pageIndex: 0,
+      points: const [InkPoint(.2, .3, .7, 0), InkPoint(.6, .7, .9, 10000)],
+      width: original.width, color: original.color, createdAt: original.createdAt);
+    editor.addStroke(original);
+    editor.undo();
+    editor.reconcileStroke(original, confirmed);
+    expect(editor.strokes(0), isEmpty, reason: 'Late reply must not resurrect an undone stroke');
+    editor.redo();
+    expect(editor.strokes(0).single, same(confirmed));
+    editor.erase({original.id}, 0);
+    final finalStroke = stroke('native');
+    editor.reconcileStroke(confirmed, finalStroke);
+    expect(editor.strokes(0), isEmpty);
+    editor.undo();
+    expect(editor.strokes(0).single, same(finalStroke), reason: 'Erasure undo uses reconciled samples');
+    editor.undo();
+    expect(editor.strokes(0), isEmpty, reason: 'Reconciliation must not add an undo step');
+    editor.redo();
+    expect(editor.strokes(0).single, same(finalStroke));
+  });
+
+  test('save waits for confirmed ink and persists the reconciled samples', () async {
+    final repository = MemoryRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    addTearDown(editor.dispose);
+    final original = stroke('native');
+    editor.addStroke(original);
+    final reply = Completer<void>();
+    editor.trackInk(reply.future.then((_) {
+      editor.reconcileStroke(original, InkStroke(id: original.id, pageIndex: 0,
+        points: const [InkPoint(.25, .3, .8, 0)], width: original.width,
+        color: original.color, createdAt: original.createdAt));
+    }));
+    final saving = editor.flush();
+    await Future<void>.delayed(Duration.zero);
+    expect(repository.saves, isEmpty);
+    reply.complete();
+    await saving;
+    final saved = AppDocument.fromJson(repository.saves.single, '').annotations[0]!.single;
+    expect(saved.points.single.x, .25);
+    expect(editor.isDirty, isFalse);
+  });
+
   test('ink signals isolate surfaces and ignore writing-paper metadata', () {
     final editor = EditorController(sampleDocument(), MemoryRepository());
     addTearDown(editor.dispose);

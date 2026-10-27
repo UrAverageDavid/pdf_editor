@@ -1,6 +1,7 @@
 // Portable tests for the exact predictor and stroke view used by wet_ink.cpp.
 // clang++ -std=c++20 -Wall -Wextra -Werror tool/native_ink_test.cpp -o /tmp/native_ink_test
 #include "../windows/runner/ink_prediction.h"
+#include "../windows/runner/ink_handoff.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -113,12 +114,31 @@ void PreviewIsolationAndDamage() {
   Check(vertical.left == -4 && vertical.top == -9 && vertical.right == 20 && vertical.bottom == 12,
       "Damage must cover old prediction in every direction");
 }
+void RapidStrokeHandoffs() {
+  ink::HandoffQueue queue;
+  Check(queue.Arm() == 0, "No frame requested without a committed stroke");
+  queue.Request(1);
+  Check(queue.Arm() == 1, "First stroke arms the single callback slot");
+  queue.Request(2);
+  queue.Request(1);
+  Check(queue.Arm() == 0, "Rapid second stroke cannot overwrite an in-flight callback");
+  Check(queue.Complete(99) == 0 && queue.Arm() == 0, "Stale callback cannot release another stroke");
+  Check(queue.Complete(1) == 0, "An already-in-flight frame must not retire ink");
+  Check(queue.Arm() == 1, "A fresh frame is required for the same stroke");
+  Check(queue.Complete(1) == 1, "Retire only after the barrier frame");
+  Check(queue.Arm() == 2, "Newer stroke survives earlier retirement");
+  Check(queue.Complete(1) == 0 && queue.Arm() == 0, "Old duplicate cannot retire the active token");
+  Check(queue.Complete(2) == 0, "Second stroke has its own frame barrier");
+  Check(queue.Arm() == 2 && queue.Complete(2) == 2, "Second stroke retires independently");
+  Check(queue.Arm() == 0, "Duplicate request must not leave an orphan retirement");
+}
 }  // namespace
 
 int main() {
+  RapidStrokeHandoffs();
   SteadyMotion();
   ChangingMotion();
   InvalidTimingAndReset();
   PreviewIsolationAndDamage();
-  std::cout << "Native ink prediction, sample isolation, and damage bounds passed.\n";
+  std::cout << "Native ink prediction, sample isolation, damage bounds, and rapid handoffs passed.\n";
 }

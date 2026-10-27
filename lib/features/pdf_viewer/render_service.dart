@@ -48,6 +48,23 @@ class RenderService {
     final bounded = math.min((scale * 4).ceil() / 4,
         math.sqrt(2000000 / (size.width * size.height)));
     final RenderKey key = (page: page, scale: bounded, tile: null);
+    return _request(key, priority);
+  }
+
+  /// The viewer requests only visible, device-resolution tiles. Whole-page
+  /// previews keep their separate resolution cap and cache entries.
+  RenderTicket requestTile(int page, double scale, Rect region, {int priority = 0}) {
+    final size = document.pageSizes[page];
+    if (!scale.isFinite || scale <= 0 || region.isEmpty ||
+        region.left < 0 || region.top < 0 || region.right > 1 || region.bottom > 1 ||
+        (size.width * scale * region.width).ceil() *
+          (size.height * scale * region.height).ceil() > 2000000) {
+      throw ArgumentError('Invalid or oversized PDF tile');
+    }
+    return _request((page: page, scale: scale, tile: region), priority);
+  }
+
+  RenderTicket _request(RenderKey key, int priority) {
     final ticket = RenderTicket(key, priority);
     if (_closed) { ticket.cancel(); return ticket; }
     final cached = cache.get(key);
@@ -68,8 +85,11 @@ class RenderService {
     _busy = true;
     try {
       final cached = cache.get(ticket.key);
-      final image = cached?.clone() ?? await document.renderPage(
-        pageIndex: ticket.key.page, scale: ticket.key.scale);
+      final region = ticket.key.tile;
+      final image = cached?.clone() ?? (region == null
+        ? await document.renderPage(pageIndex: ticket.key.page, scale: ticket.key.scale)
+        : await document.renderTile(pageIndex: ticket.key.page,
+            scale: ticket.key.scale, normalizedRegion: region));
       if (ticket.cancelled || _closed) {
         image.dispose();
         ticket.cancel();

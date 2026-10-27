@@ -185,6 +185,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     _editorKey.currentState?.finishInput();
     setState(() => _busy = true);
     try {
+      await _editor!.settleInk();
       final snapshot = _editor!.document.toJson();
       final destination = await getSaveLocation(suggestedName:
           '${p.basenameWithoutExtension(_editor!.document.displayName)}.papertrail.json',
@@ -211,6 +212,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     _editorKey.currentState?.finishInput();
     setState(() { _busy = true; _busyText = 'Exporting annotated PDF…'; });
     try {
+      await _editor!.settleInk();
       final document = _editor!.document;
       final snapshot = AppDocument.fromJson(document.toJson(), document.sourcePath);
       final destination = await getSaveLocation(

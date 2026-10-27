@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
@@ -30,6 +31,7 @@ class PaintCountingEditor extends EditorController {
 
 class FakePdf implements PdfDocumentHandle {
   final rendered = <int>[];
+  final tiles = <({int page, double scale, Rect region})>[];
   @override
   int get pageCount => 327;
   @override
@@ -37,6 +39,9 @@ class FakePdf implements PdfDocumentHandle {
   @override
   Future<ui.Image> renderPage({required int pageIndex, required double scale}) async {
     rendered.add(pageIndex);
+    return _image();
+  }
+  ui.Image _image() {
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
     canvas.drawColor(Colors.white, BlendMode.src);
@@ -46,7 +51,10 @@ class FakePdf implements PdfDocumentHandle {
   }
   @override
   Future<ui.Image> renderTile({required int pageIndex, required Rect normalizedRegion,
-    required double scale}) => renderPage(pageIndex: pageIndex, scale: scale);
+    required double scale}) async {
+    tiles.add((page: pageIndex, scale: scale, region: normalizedRegion));
+    return _image();
+  }
   @override
   Future<void> close() async {}
 }
@@ -61,6 +69,54 @@ List<ui.Picture> recordedPictures(ContainerLayer root) {
 }
 
 void main() {
+  testWidgets('continuous zoom reuses stroke paths and defers PDF tiles until settling', (tester) async {
+    final pdf = FakePdf();
+    final renders = RenderService(pdf);
+    final editor = EditorController(sampleDocument(), MemoryRepository());
+    editor.document.annotations[0] = List.generate(100, (i) => InkStroke(
+      id: 'zoom-$i', pageIndex: 0, width: 2, color: 0xff2947c7,
+      createdAt: DateTime.utc(2026), points: List.generate(128, (p) => InkPoint(
+        .1 + p * .005, .05 + i * .008, .75, p))));
+    final viewport = ViewportController(pdf.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    final cache = tester.widgetList<CustomPaint>(find.byType(CustomPaint))
+      .map((p) => p.painter).whereType<CommittedInkPainter>()
+      .firstWhere((p) => p.page == 0).cache!;
+    final recorded = cache.debugRecordedStrokes;
+    final rasterized = cache.debugRasterizations;
+    final rendersBefore = pdf.rendered.length;
+    final tilesBefore = pdf.tiles.length;
+    for (var i = 1; i <= 20; i++) {
+      viewport.setZoom(1 + i * .04);
+      await tester.pump(const Duration(milliseconds: 8));
+      final mountedCache = tester.widgetList<CustomPaint>(find.byType(CustomPaint))
+        .map((p) => p.painter).whereType<CommittedInkPainter>()
+        .firstWhere((p) => p.page == 0).cache!;
+      expect(mountedCache, same(cache));
+      expect(cache.debugRecordedStrokes, recorded);
+      expect(cache.debugRasterizations, rasterized);
+      expect(pdf.rendered.length, rendersBefore);
+      expect(pdf.tiles.length, tilesBefore);
+    }
+    await tester.pump(const Duration(milliseconds: 150));
+    await tester.pumpAndSettle();
+    expect(cache.debugRecordedStrokes, recorded);
+    expect(cache.debugTileCount, inInclusiveRange(1, 7));
+    expect(pdf.tiles.length, greaterThan(tilesBefore));
+    final dpr = tester.view.devicePixelRatio;
+    for (final tile in pdf.tiles.skip(tilesBefore)) {
+      expect(tile.scale, viewport.scale * dpr);
+      expect(tile.region.width * 612 * tile.scale, lessThanOrEqualTo(514.001));
+      expect(tile.region.height * 792 * tile.scale, lessThanOrEqualTo(514.001));
+    }
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    editor.dispose();
+    viewport.dispose();
+  });
+
   testWidgets('document options exposes PDF export and commits active input first', (tester) async {
     final renders = RenderService(FakePdf());
     final editor = EditorController(sampleDocument(), MemoryRepository());
@@ -162,7 +218,7 @@ void main() {
     editor.dispose();
   });
 
-  testWidgets('fractional scrolling retains PDF and notes ink layers and exact sizes', (tester) async {
+  testWidgets('fractional scrolling reuses ink geometry without rasterizing during movement', (tester) async {
     final renders = RenderService(FakePdf());
     final saved = sampleDocument();
     saved.writingAreas[0] = const WritingArea(pattern: WritingPattern.grid);
@@ -189,7 +245,8 @@ void main() {
       .where((p) => p.page == 0).map((p) => p.cache!).toList();
     final rasterizations = [for (final cache in inkCaches) cache.debugRasterizations];
     final images = [for (final cache in inkCaches) cache.debugImage];
-    expect(images.every((image) => image != null), isTrue);
+    expect(inkCaches.every((cache) => cache.debugPictureCount > 0), isTrue);
+    final recordings = [for (final cache in inkCaches) cache.debugRecordedStrokes];
     editor.firstPageReads = 0;
     for (var i = 0; i < 100; i++) {
       viewport.pan(Offset(i.isEven ? -.37 : .37, -.73));
@@ -197,10 +254,12 @@ void main() {
       expect(tester.getSize(page), pageSize);
       expect(tester.getSize(notes), notesSize);
     }
-    expect(editor.firstPageReads, 0, reason: 'Scrolling must only move the retained ink layers');
+    expect([for (final cache in inkCaches) cache.debugRecordedStrokes], recordings,
+      reason: 'Scrolling must reuse the retained document geometry');
     expect([for (final cache in inkCaches) cache.debugRasterizations], rasterizations);
     expect([for (final cache in inkCaches) cache.debugImage], orderedEquals(images),
-      reason: 'Annotated PDF and notes surfaces must reuse raster images while scrolling');
+      reason: 'Scrolling must retain each surface cache, including vector fallbacks');
+    editor.firstPageReads = 0;
     editor.addStroke(stroke('page-only'));
     await tester.pump();
     expect(editor.firstPageReads, 1, reason: 'A PDF edit must not repaint note ink');
@@ -267,6 +326,54 @@ void main() {
     editor.dispose();
   });
 
+  testWidgets('Windows commits confirmed native samples before saving', (tester) async {
+    const channel = MethodChannel('papertrail/wet_ink');
+    final reply = Completer<Object?>();
+    final calls = <MethodCall>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      if (call.method == 'begin') return true;
+      if (call.method == 'freeze') return reply.future;
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+    final renders = RenderService(FakePdf());
+    final repository = MemoryRepository();
+    final editor = EditorController(sampleDocument(), repository);
+    final viewport = ViewportController(renders.document.pageSizes);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DocumentView(
+      editor: editor, renders: renders, viewport: viewport))));
+    await tester.pumpAndSettle();
+    final pen = await tester.startGesture(const Offset(200, 150), kind: PointerDeviceKind.stylus);
+    await tester.pump();
+    await pen.moveTo(const Offset(230, 170), timeStamp: const Duration(milliseconds: 16));
+    await pen.up();
+    final initial = editor.strokes(0).single;
+    final saving = editor.flush();
+    await tester.pump();
+    expect(repository.saves, isEmpty);
+    expect(calls.where((c) => c.method == 'retire'), isEmpty);
+    reply.complete([[.2, .3, .7, 0], [.25, .35, .8, 16000]]);
+    await tester.pump();
+    await saving;
+    await tester.pump();
+    final confirmed = editor.strokes(0).single;
+    expect(confirmed.id, initial.id);
+    expect(confirmed.points.map((p) => p.toJson()), [[.2, .3, .7, 0], [.25, .35, .8, 16000]]);
+    expect(AppDocument.fromJson(repository.saves.last, '').annotations[0]!.single.toJson(), confirmed.toJson());
+    expect(calls.where((c) => c.method == 'retire'), hasLength(1));
+    editor.undo();
+    expect(editor.strokes(0), isEmpty);
+    await tester.pump();
+    expect(calls.where((c) => c.method == 'discard'), hasLength(1));
+    editor.redo();
+    expect(editor.strokes(0).single, same(confirmed));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await renders.close();
+    viewport.dispose();
+    editor.dispose();
+  }, variant: TargetPlatformVariant({TargetPlatform.windows}));
+
   for (final nativeAccepted in [true, false]) {
     testWidgets('Windows wet ink preserves saved samples (accepted: $nativeAccepted)', (tester) async {
       const channel = MethodChannel('papertrail/wet_ink');
@@ -305,8 +412,8 @@ void main() {
       final saved = editor.strokes(0).single;
       expect(saved.points.take(observed.length), orderedEquals(observed));
       expect(calls.where((c) => c.method == 'begin'), hasLength(1));
-      expect(calls.where((c) => c.method == 'freeze'), hasLength(1));
-      expect(calls.where((c) => c.method == 'retire'), hasLength(1));
+      expect(calls.where((c) => c.method == 'freeze'), hasLength(nativeAccepted ? 1 : 0));
+      expect(calls.where((c) => c.method == 'retire'), hasLength(nativeAccepted ? 1 : 0));
       final beginCount = calls.where((c) => c.method == 'begin').length;
       final mouse = await tester.startGesture(const Offset(250, 200), kind: PointerDeviceKind.mouse);
       await mouse.up();

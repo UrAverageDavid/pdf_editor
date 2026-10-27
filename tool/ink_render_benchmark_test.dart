@@ -82,6 +82,31 @@ void main() {
     }
   });
 
+  test('record saved ink through continuous zoom', () {
+    final strokes = List.generate(200, (index) => InkStroke(id: '$index', pageIndex: 0,
+      points: List.generate(128, (i) => InkPoint(
+        .1 + .8 * i / 128, .5 + .35 * math.sin((i + index) / 20), .75, i)),
+      width: 2.2, color: 0xff2947c7, createdAt: DateTime.utc(2026),
+      penStyle: const PenStyle(type: PenType.fountain)));
+    for (final retained in [false, true]) {
+      final cache = CommittedInkCache();
+      void frame(double zoom) {
+        final recorder = ui.PictureRecorder();
+        cache.paint(Canvas(recorder), const Size(600, 800) * zoom, 600, strokes,
+          documentSize: retained ? const Size(600, 800) : null,
+          visibleRect: const Rect.fromLTWH(0, 0, 600, 800));
+        recorder.endRecording().dispose();
+      }
+      frame(1);
+      final watch = Stopwatch()..start();
+      for (var i = 1; i <= 30; i++) { frame(1 + i * .02); }
+      watch.stop();
+      debugPrint('Zoom geometry, 200 x 128 samples, retained=$retained: '
+        '${(watch.elapsedMicroseconds / 30000).toStringAsFixed(3)} ms/frame');
+      cache.dispose();
+    }
+  });
+
   test('record sustained live ink frames', () {
     for (final type in [PenType.fountain, PenType.brush, PenType.highlighter]) {
       for (final count in [1000, 6000]) {

@@ -11,12 +11,14 @@
 #include <wrl/client.h>
 
 #include <atomic>
+#include <map>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "ink_prediction.h"
+#include "ink_handoff.h"
 
 // A transient native ink surface above the Flutter child. WM_POINTER input and
 // DirectComposition commits stay on the Windows platform thread, independent of
@@ -45,6 +47,19 @@ class WetInk {
   void Clear() noexcept;
   void Fail() noexcept;
   void Retire(int64_t token);
+  void Archive();
+  void Discard(int64_t token);
+  void ArmRetirement();
+  flutter::EncodableValue Samples() const;
+  struct CompletedStroke {
+    Microsoft::WRL::ComPtr<IDCompositionVisual2> visual;
+    Microsoft::WRL::ComPtr<IDCompositionSurface> surface;
+    flutter::EncodableValue samples;
+    uint64_t pixels;
+  };
+  std::map<int64_t, CompletedStroke> completed_;
+  ink::HandoffQueue handoff_;
+  float reference_x_ = 0, reference_y_ = 0, reference_width_ = 1, reference_height_ = 1;
 
   HWND window_;
   HWND target_window_;
@@ -57,8 +72,6 @@ class WetInk {
   bool clipped_ = false;
   bool surface_initialized_ = false;
   int64_t token_ = 0;
-  int64_t retire_requested_ = 0;
-  bool frame_callback_pending_ = false;
   UINT64 last_counter_ = 0;
   DWORD last_time_ = 0;
   std::vector<Point> pending_;
@@ -81,6 +94,7 @@ class WetInk {
   Microsoft::WRL::ComPtr<ID2D1Bitmap1> stable_;
   Microsoft::WRL::ComPtr<IDCompositionDesktopDevice> composition_;
   Microsoft::WRL::ComPtr<IDCompositionTarget> target_;
+  Microsoft::WRL::ComPtr<IDCompositionVisual2> root_;
   Microsoft::WRL::ComPtr<IDCompositionVisual2> visual_;
   Microsoft::WRL::ComPtr<IDCompositionEffectGroup> opacity_;
   Microsoft::WRL::ComPtr<IDCompositionSurface> surface_;

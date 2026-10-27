@@ -67,6 +67,10 @@ class DocumentViewState extends State<DocumentView>
   int _strokeSequence = 0;
   int? _edgePage;
   Rect? _edgePopup;
+  Offset? _viewportOrigin;
+  bool _originCheckScheduled = false;
+  Timer? _viewSettleTimer;
+  bool _viewMoving = false;
   DateTime _lastPen = DateTime.fromMillisecondsSinceEpoch(0);
   ViewportController get view => widget.viewport;
 
@@ -99,6 +103,7 @@ class DocumentViewState extends State<DocumentView>
       ? Rect.fromLTRB(rect.left, rect.top, view.size.width, rect.bottom) : rect;
     final clip = drawingRect.intersect(Offset.zero & view.size).shift(origin);
     unawaited(_wetInk.begin(position: event.position, clip: clip,
+      referenceRect: (rect.topLeft & view.pageSize(_page!)).shift(origin),
       devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
       width: _ink.width * view.scale, color: _ink.color, style: _ink.penStyle!));
   }
@@ -114,13 +119,26 @@ class DocumentViewState extends State<DocumentView>
     return false;
   }
 
-  void _editorChanged() { _syncWritingAreas(); if (mounted) setState(() {}); }
+  void _editorChanged() {
+    _wetInk.removeMissingStrokes((stroke) => widget.editor.strokes(stroke.pageIndex)
+      .any((saved) => saved.id == stroke.id));
+    _syncWritingAreas();
+    if (mounted) setState(() {});
+  }
   void _syncWritingAreas() => view.setWritingAreas({
     for (final entry in widget.editor.document.writingAreas.entries)
       if (entry.value.visible) entry.key: entry.key == _page
         ? (_resizedWritingWidth ?? entry.value.width) : entry.value.width,
   });
   void _rebuild() {
+    if (!view.inputActive) {
+      _wetInk.invalidate();
+      _viewMoving = true;
+      _viewSettleTimer?.cancel();
+      _viewSettleTimer = Timer(const Duration(milliseconds: 120), () {
+        if (mounted) setState(() => _viewMoving = false);
+      });
+    }
     if (mounted) setState(() { _edgePage = null; _edgePopup = null; });
   }
 
@@ -334,13 +352,13 @@ class DocumentViewState extends State<DocumentView>
 
   /// Also used before focus loss, document switching, export, and normal exit.
   void finishInput({bool recognizeShape = false}) {
-    _wetInk.finish();
+    InkStroke? committed;
     _predictionExpiry?.cancel();
     _predictor.reset();
     _scroll.stop();
     if (_penInking) unawaited(_haptics.stop());
     _penInking = false;
-    if (_pointer == null) { _touches.clear(); return; }
+    if (_pointer == null) { _touches.clear(); unawaited(_wetInk.finish()); return; }
     if (_erasing) {
       if (_ink.surface == InkSurface.notes && _erased.isNotEmpty) {
         _fitWritingSpace(0, immediate: true);
@@ -364,12 +382,32 @@ class DocumentViewState extends State<DocumentView>
         _fitWritingSpace(_rightEdge(detected?.points ?? _ink.points,
           _ink.width, view.layout.pages[_page!].width), immediate: true);
       }
-      widget.editor.addStroke(InkStroke(
+      committed = InkStroke(
         id: '${now.microsecondsSinceEpoch}-${_strokeSequence++}', pageIndex: _page!,
         points: detected?.points ?? _ink.points, width: _ink.width, color: _ink.color, createdAt: now,
         kind: _ink.kind, penStyle: _ink.penStyle, shape: detected?.shape ?? InkShape.freehand,
-        surface: _ink.surface), writingAreaWidth: _resizedWritingWidth);
+        surface: _ink.surface);
+      widget.editor.addStroke(committed, writingAreaWidth: _resizedWritingWidth);
     }
+    final original = committed;
+    final editor = widget.editor;
+    final reference = _page == null ? Size.zero : view.layout.pages[_page!].size;
+    final detect = _detectShape && recognizeShape;
+    final maxX = original?.surface == InkSurface.notes
+      ? view.layout.notes[original!.pageIndex].width / reference.width : 1.0;
+    editor.trackInk(_wetInk.finish(stroke: original, onSamples: original == null ? null : (points) {
+      // Native clipping is in screen coordinates; reject a mismatched reply
+      // instead of saving samples outside this document surface.
+      if (points.any((p) => p.x > maxX)) return;
+      var detected = detect ? ShapeDetector.detect(points, reference) : null;
+      if (detected != null && detected.points.any((p) =>
+          p.x < 0 || p.x > maxX || p.y < 0 || p.y > 1)) detected = null;
+      editor.reconcileStroke(original, InkStroke(id: original.id,
+        pageIndex: original.pageIndex, points: detected?.points ?? points,
+        width: original.width, color: original.color, createdAt: original.createdAt,
+        surface: original.surface, kind: original.kind, penStyle: original.penStyle,
+        shape: detected?.shape ?? InkShape.freehand));
+    }));
     _pointer = null;
     _page = null;
     _resizedWritingWidth = null;
@@ -438,6 +476,7 @@ class DocumentViewState extends State<DocumentView>
 
   @override
   void dispose() {
+    _viewSettleTimer?.cancel();
     _wetInk.removeListener(_wetInkChanged);
     _wetInk.dispose();
     _predictionExpiry?.cancel();
@@ -458,9 +497,27 @@ class DocumentViewState extends State<DocumentView>
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(builder: (context, constraints) {
-    if (view.size != constraints.biggest) { _edgePage = null; _edgePopup = null; }
+    if (view.size != constraints.biggest) {
+      _edgePage = null; _edgePopup = null;
+      _wetInk.invalidate();
+    }
     view.configure(constraints.biggest);
     final dpr = MediaQuery.devicePixelRatioOf(context);
+    // Ancestor transforms (including route transitions) need completed layout.
+    // Until their origin is known, use vectors rather than resampling ink.
+    if (!_originCheckScheduled) {
+      _originCheckScheduled = true;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _originCheckScheduled = false;
+        if (!mounted) return;
+        final origin = (context.findRenderObject()! as RenderBox).localToGlobal(Offset.zero);
+        if (origin != _viewportOrigin) setState(() => _viewportOrigin = origin);
+      });
+    }
+    Rect visibleInk(Rect rect) => rect.intersect(Offset.zero & view.size)
+      .shift(-rect.topLeft);
+    Offset? physicalOrigin(Rect rect) => _viewportOrigin == null ? null :
+      (_viewportOrigin! + rect.topLeft) * dpr;
     final visible = view.visibleDocument;
     final pages = view.layout.visible(visible).toList();
     return Stack(fit: StackFit.expand, children: [
@@ -491,9 +548,17 @@ class DocumentViewState extends State<DocumentView>
                     child: ClipRect(child: Stack(fit: StackFit.expand, children: [
                       RepaintBoundary(child: PageImage(key: ValueKey('pdf-$page'),
                         renders: widget.renders, page: page, scale: view.scale * dpr,
+                        deferRendering: _viewMoving,
                         priority: page == view.currentPage ? 0 : view.layout.pages[page].overlaps(visible) ? 1 : 3)),
-                      RepaintBoundary(child: CommittedInk(
+                      if (!_viewMoving) RepaintBoundary(key: ValueKey('pdf-tiles-$page'), child: PageTiles(
+                        renders: widget.renders, page: page, scale: view.scale * dpr,
+                        displaySize: view.pageSize(page), visibleRect: visibleInk(view.pageRect(page)))),
+                      RepaintBoundary(key: ValueKey('saved-ink-$page'), child: CommittedInk(
                         editor: widget.editor, page: page, pageWidth: view.layout.pages[page].width,
+                        allowRaster: !_viewMoving,
+                        documentSize: view.layout.pages[page].size,
+                        visibleRect: visibleInk(view.pageRect(page)),
+                        physicalOrigin: physicalOrigin(view.pageRect(page)),
                         hidden: _erasing && _page == page && _ink.surface == InkSurface.page
                           ? Set.of(_erased) : const {})),
                       RepaintBoundary(child: CustomPaint(painter: ActiveInkPainter(
@@ -523,6 +588,10 @@ class DocumentViewState extends State<DocumentView>
                             scale: view.scale))),
                           RepaintBoundary(child: CommittedInk(
                             editor: widget.editor, page: page, pageWidth: view.layout.pages[page].width,
+                            allowRaster: !_viewMoving,
+                            documentSize: view.layout.pages[page].size,
+                            visibleRect: visibleInk(view.screenRect(view.layout.notes[page])),
+                            physicalOrigin: physicalOrigin(view.screenRect(view.layout.notes[page])),
                             surface: InkSurface.notes, referenceSize: view.pageSize(page),
                             hidden: _erasing && _page == page && _ink.surface == InkSurface.notes
                               ? Set.of(_erased) : const {})),

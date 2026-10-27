@@ -28,6 +28,7 @@ class EditorController extends ChangeNotifier {
   final _inkSignals = <(int, InkSurface), ValueNotifier<int>>{};
   final _undo = <StrokeChange>[];
   final _redo = <StrokeChange>[];
+  final _pendingInk = <Future<void>>{};
   Timer? _timer;
   Future<void>? _saving;
   bool _flushRequested = false;
@@ -117,6 +118,38 @@ class EditorController extends ChangeNotifier {
       areaPage: resize ? stroke.pageIndex : null,
       areaBefore: resize ? before : null,
       areaAfter: resize ? before.copyWith(width: writingAreaWidth) : null));
+  }
+
+  /// Native input is reconciled without adding a second undo step. A late
+  /// completion must update redo/erase history too, but never resurrect ink.
+  void reconcileStroke(InkStroke original, InkStroke replacement) {
+    if (_disposed) return;
+    assert(original.id == replacement.id && original.pageIndex == replacement.pageIndex);
+    StrokeChange replace(StrokeChange change) => StrokeChange(
+      added: [for (final s in change.added) if (s.id == original.id) replacement else s],
+      removed: {for (final entry in change.removed.entries)
+        (entry.key.id == original.id ? replacement : entry.key): entry.value},
+      areaPage: change.areaPage, areaBefore: change.areaBefore, areaAfter: change.areaAfter);
+    for (final history in [_undo, _redo]) {
+      for (var i = 0; i < history.length; i++) { history[i] = replace(history[i]); }
+    }
+    final strokes = document.annotations[original.pageIndex];
+    final index = strokes?.indexWhere((s) => s.id == original.id) ?? -1;
+    if (index < 0) return;
+    strokes![index] = replacement;
+    final signal = _inkSignals[(original.pageIndex, original.surface)];
+    if (signal != null) signal.value++;
+    _changed();
+  }
+
+  void trackInk(Future<void> completion) {
+    _pendingInk.add(completion);
+    unawaited(completion.whenComplete(() => _pendingInk.remove(completion)));
+  }
+
+  /// Export/backup and persistence must use the same samples as the preview.
+  Future<void> settleInk() async {
+    while (_pendingInk.isNotEmpty) { await Future.wait(List.of(_pendingInk)); }
   }
 
   void expandWritingArea(int page) {
@@ -244,7 +277,9 @@ class EditorController extends ChangeNotifier {
 
   Future<void> _drain() async {
     try {
+      await settleInk();
       while (isDirty) {
+        await settleInk();
         // A new input event/commit during an autosave gets its own idle window.
         // An explicit flush can upgrade that same writer to drain immediately.
         if (!_flushRequested && (_disposed || _timer != null)) break;
