@@ -555,7 +555,7 @@ class DocumentViewState extends State<DocumentView>
                         displaySize: view.pageSize(page), visibleRect: visibleInk(view.pageRect(page)))),
                       RepaintBoundary(key: ValueKey('saved-ink-$page'), child: CommittedInk(
                         editor: widget.editor, page: page, pageWidth: view.layout.pages[page].width,
-                        allowRaster: !_viewMoving,
+                        viewMoving: _viewMoving,
                         documentSize: view.layout.pages[page].size,
                         visibleRect: visibleInk(view.pageRect(page)),
                         physicalOrigin: physicalOrigin(view.pageRect(page)),
@@ -588,7 +588,7 @@ class DocumentViewState extends State<DocumentView>
                             scale: view.scale))),
                           RepaintBoundary(child: CommittedInk(
                             editor: widget.editor, page: page, pageWidth: view.layout.pages[page].width,
-                            allowRaster: !_viewMoving,
+                            viewMoving: _viewMoving,
                             documentSize: view.layout.pages[page].size,
                             visibleRect: visibleInk(view.screenRect(view.layout.notes[page])),
                             physicalOrigin: physicalOrigin(view.screenRect(view.layout.notes[page])),

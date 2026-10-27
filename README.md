@@ -265,12 +265,15 @@ does not invalidate its retained layers. Saved ink caches ordered groups of up t
 with a soft 4096-point limit (individual strokes remain whole for highlighter opacity).
 Edits replace affected groups. The document view records saved strokes in PDF coordinates,
 so zoom reuses those paths and changes only the canvas transform. Chunk bounds skip ink
-outside the visible viewport. During navigation, retained vectors draw at the current scale;
-after 120 ms without movement, visible 512-pixel ink tiles are rasterized at the full device
-pixel ratio. Fractional page origins are included in the tile grid, and one-pixel gutters
-avoid seams. The tile cache retains at most 2 million pixels per surface; it never reduces
-ink resolution to fit a whole page. Edits invalidate tiles, while unchanged geometry remains
-reusable. Rasterization failure falls back to vectors. Thumbnail caches remain separate.
+outside the visible viewport. Panning reuses same-scale raster tiles, with vectors for newly
+exposed areas; zooming uses vectors at the current scale. Panning may temporarily resample
+ink at fractional offsets. After 120 ms without movement, visible 512-pixel ink tiles are
+rasterized at the full device pixel ratio and exact fractional page origin, restoring sharp
+ink. One-pixel gutters avoid seams. The tile budget grows from 2 million pixels to fit the
+visible area, capped at 16 million pixels (64 MB) per surface. Offscreen tiles are evicted
+first; excess visible tiles use vectors without evicting other visible tiles. Resolution is
+never reduced to fit a whole page. Edits invalidate only tiles intersecting changed strokes;
+unchanged geometry and tiles remain reusable. Rasterization failure falls back to vectors. Thumbnail caches remain separate.
 Whole-page PDF previews retain their 2-million-pixel cap. Above that resolution, the viewer
 requests visible PDF tiles at the current zoom and device pixel ratio after navigation settles.
 Intermediate zoom steps do not request replacement previews or tiles for mounted pages.

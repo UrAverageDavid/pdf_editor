@@ -103,7 +103,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 150));
     await tester.pumpAndSettle();
     expect(cache.debugRecordedStrokes, recorded);
-    expect(cache.debugTileCount, inInclusiveRange(1, 7));
+    expect(cache.debugTileCount, inInclusiveRange(1, CommittedInkCache.maxTileRasterPixels ~/ (514 * 514)));
     expect(pdf.tiles.length, greaterThan(tilesBefore));
     final dpr = tester.view.devicePixelRatio;
     for (final tile in pdf.tiles.skip(tilesBefore)) {
@@ -235,6 +235,7 @@ void main() {
       editor: editor, renders: renders, viewport: viewport))));
     await tester.pumpAndSettle();
     viewport.setZoom(.65);
+    await tester.pump(const Duration(milliseconds: 150));
     await tester.pumpAndSettle();
     final page = find.byKey(const ValueKey('page-0'));
     final notes = find.byKey(const ValueKey('notes-0'));
@@ -244,6 +245,7 @@ void main() {
       .map((p) => p.painter).whereType<CommittedInkPainter>()
       .where((p) => p.page == 0).map((p) => p.cache!).toList();
     final rasterizations = [for (final cache in inkCaches) cache.debugRasterizations];
+    final tileDraws = [for (final cache in inkCaches) cache.debugTileDraws];
     final images = [for (final cache in inkCaches) cache.debugImage];
     expect(inkCaches.every((cache) => cache.debugPictureCount > 0), isTrue);
     final recordings = [for (final cache in inkCaches) cache.debugRecordedStrokes];
@@ -257,6 +259,10 @@ void main() {
     expect([for (final cache in inkCaches) cache.debugRecordedStrokes], recordings,
       reason: 'Scrolling must reuse the retained document geometry');
     expect([for (final cache in inkCaches) cache.debugRasterizations], rasterizations);
+    for (var i = 0; i < inkCaches.length; i++) {
+      expect(inkCaches[i].debugTileDraws, greaterThan(tileDraws[i]),
+        reason: 'Panning must draw the cached pixels, not replay all saved vectors');
+    }
     expect([for (final cache in inkCaches) cache.debugImage], orderedEquals(images),
       reason: 'Scrolling must retain each surface cache, including vector fallbacks');
     editor.firstPageReads = 0;

@@ -87,7 +87,7 @@ class CommittedInk extends StatefulWidget {
   const CommittedInk({super.key, required this.editor, required this.page,
     required this.pageWidth, this.hidden = const {},
     this.surface = InkSurface.page, this.referenceSize, this.allowRaster = true,
-    this.documentSize, this.visibleRect, this.physicalOrigin});
+    this.documentSize, this.visibleRect, this.physicalOrigin, this.viewMoving = false});
   final EditorController editor;
   final int page;
   final double pageWidth;
@@ -95,6 +95,8 @@ class CommittedInk extends StatefulWidget {
   final InkSurface surface;
   final Size? referenceSize;
   final bool allowRaster;
+  /// Reuse same-scale tiles while panning; rebuild exact pixel phase at rest.
+  final bool viewMoving;
   /// Unzoomed PDF page size; notes use the same reference as their PDF page.
   final Size? documentSize;
   /// Visible portion of this surface in local logical pixels.
@@ -121,7 +123,7 @@ class _CommittedInkState extends State<CommittedInk> {
     widget.editor, widget.page, widget.pageWidth, hidden: widget.hidden,
     surface: widget.surface, referenceSize: widget.referenceSize, cache: _cache,
     documentSize: widget.documentSize, visibleRect: widget.visibleRect,
-    physicalOrigin: widget.physicalOrigin,
+    physicalOrigin: widget.physicalOrigin, viewMoving: widget.viewMoving,
     devicePixelRatio: widget.allowRaster
       ? MediaQuery.maybeDevicePixelRatioOf(context) ?? View.of(context).devicePixelRatio : null));
 
@@ -145,7 +147,8 @@ class CommittedInkCache {
   List<InkStroke> _rasterStrokes = const [];
   bool _rasterFailed = false;
   final _tiles = <(int, int), ui.Image>{};
-  Object? _tileConfiguration;
+  (Size, double, Offset)? _tileConfiguration;
+  List<InkStroke> _strokes = const [];
   bool _tileRasterFailed = false;
   static const _tileSide = 512;
   static const _tilePixels = (_tileSide + 2) * (_tileSide + 2);
@@ -155,6 +158,8 @@ class CommittedInkCache {
 
   // Bound GPU memory even at extreme zoom or on very wide note surfaces.
   static const maxRasterPixels = 2000000;
+  // Grow only to fit the visible tiles, up to 64 MB per mounted surface.
+  static const maxTileRasterPixels = 16000000;
   static const maxRasterDimension = 4096;
 
   @visibleForTesting
@@ -164,19 +169,42 @@ class CommittedInkCache {
   @visibleForTesting
   int debugRasterizations = 0;
   @visibleForTesting
+  int debugTileDraws = 0;
+  @visibleForTesting
   int debugRasterizedStrokes = 0;
   @visibleForTesting
   ui.Image? get debugImage => _image;
 
   void paint(Canvas canvas, Size size, double pageWidth, List<InkStroke> strokes,
       {Size? surfaceSize, double? devicePixelRatio, Size? documentSize,
-      Rect? visibleRect, Offset? physicalOrigin}) {
+      Rect? visibleRect, Offset? physicalOrigin, bool viewMoving = false}) {
     final geometrySize = documentSize ?? size;
     if (_size != geometrySize || _pageWidth != pageWidth) {
       dispose();
       _size = geometrySize;
       _pageWidth = pageWidth;
     }
+    if (!listEquals(_strokes, strokes)) {
+      _invalidateEditedTiles(strokes, geometrySize, pageWidth);
+      _updateChunks(strokes, geometrySize, pageWidth);
+      _strokes = List.of(strokes);
+    }
+    if (documentSize != null) {
+      if (_chunks.isEmpty) { _disposeTiles(); return; }
+      final clip = (visibleRect ?? (Offset.zero & (surfaceSize ?? size)))
+        .intersect(Offset.zero & (surfaceSize ?? size));
+      if (clip.isEmpty) return;
+      if (devicePixelRatio != null && physicalOrigin != null &&
+          _paintTiles(canvas, size, geometrySize, clip, devicePixelRatio, physicalOrigin, viewMoving)) return;
+      _drawGeometry(canvas, size, geometrySize, clip);
+      return;
+    }
+    if (devicePixelRatio != null && _paintRaster(canvas, surfaceSize ?? size,
+        size, pageWidth, strokes, devicePixelRatio)) return;
+    for (final chunk in _chunks) { canvas.drawPicture(chunk.picture); }
+  }
+
+  void _updateChunks(List<InkStroke> strokes, Size geometrySize, double pageWidth) {
     final indices = <InkStroke, int>{
       for (var i = 0; i < strokes.length; i++) strokes[i]: i,
     };
@@ -217,34 +245,48 @@ class CommittedInkCache {
         _paintCommittedStroke(recording, geometrySize, pageWidth, stroke);
       }
       next.add(_CommittedInkChunk(group, points, recorder.endRecording(),
-        _strokeBounds(group, geometrySize)));
+        _strokeBounds(group, geometrySize, pageWidth)));
       assert(() { debugRecordedStrokes += group.length; return true; }());
       start = end;
     }
-    if (!listEquals(next, _chunks)) _disposeTiles();
     final retained = next.toSet();
     for (final chunk in _chunks) {
       if (!retained.contains(chunk)) chunk.picture.dispose();
     }
     _chunks = next;
-    if (documentSize != null) {
-      if (_chunks.isEmpty) return;
-      final clip = (visibleRect ?? (Offset.zero & (surfaceSize ?? size)))
-        .intersect(Offset.zero & (surfaceSize ?? size));
-      if (clip.isEmpty) return;
-      if (devicePixelRatio != null && physicalOrigin != null &&
-          _paintTiles(canvas, size, geometrySize, clip, devicePixelRatio, physicalOrigin)) return;
-      _drawGeometry(canvas, size, geometrySize, clip);
-      return;
+  }
+
+  void _invalidateEditedTiles(List<InkStroke> strokes, Size geometry, double pageWidth) {
+    // An edit retries rasterization even if the previous attempt made no tiles.
+    _tileRasterFailed = false;
+    final configuration = _tileConfiguration;
+    if (configuration == null || _tiles.isEmpty) return;
+    // Common prefix/suffix are unchanged, even when undo/erase shifts indices.
+    var start = 0;
+    while (start < _strokes.length && start < strokes.length &&
+        identical(_strokes[start], strokes[start])) { start++; }
+    var oldEnd = _strokes.length, newEnd = strokes.length;
+    while (oldEnd > start && newEnd > start &&
+        identical(_strokes[oldEnd - 1], strokes[newEnd - 1])) {
+      oldEnd--; newEnd--;
     }
-    if (devicePixelRatio != null && _paintRaster(canvas, surfaceSize ?? size,
-        size, pageWidth, strokes, devicePixelRatio)) return;
-    for (final chunk in _chunks) { canvas.drawPicture(chunk.picture); }
+    final changed = [..._strokes.sublist(start, oldEnd), ...strokes.sublist(start, newEnd)];
+    final dirty = _strokeBounds(changed, geometry, pageWidth);
+    final (size, dpr, phase) = configuration;
+    final sx = size.width / geometry.width, sy = size.height / geometry.height;
+    _tiles.removeWhere((key, image) {
+      final rect = Rect.fromLTWH((key.$1 * _tileSide - phase.dx - 1) / dpr / sx,
+        (key.$2 * _tileSide - phase.dy - 1) / dpr / sy,
+        (_tileSide + 2) / dpr / sx, (_tileSide + 2) / dpr / sy);
+      if (!rect.overlaps(dirty)) return false;
+      image.dispose();
+      return true;
+    });
   }
 
   // Bounds include the widest pressure response, round caps and antialiasing.
   // Midpoint curves lie inside the convex hull of their samples.
-  static Rect _strokeBounds(List<InkStroke> strokes, Size size) {
+  static Rect _strokeBounds(List<InkStroke> strokes, Size size, double pageWidth) {
     Rect? bounds;
     for (final stroke in strokes) {
       if (stroke.points.isEmpty) continue;
@@ -255,7 +297,7 @@ class CommittedInkCache {
         left = math.min(left, p.dx); top = math.min(top, p.dy);
         right = math.max(right, p.dx); bottom = math.max(bottom, p.dy);
       }
-      final rect = Rect.fromLTRB(left, top, right, bottom).inflate(stroke.width * 2 + 2);
+      final rect = Rect.fromLTRB(left, top, right, bottom).inflate(stroke.width * size.width / pageWidth * 2 + 2);
       bounds = bounds == null ? rect : bounds.expandToInclude(rect);
     }
     return bounds ?? Rect.zero;
@@ -275,11 +317,18 @@ class CommittedInkCache {
   }
 
   bool _paintTiles(Canvas canvas, Size size, Size geometry, Rect clip,
-      double dpr, Offset origin) {
+      double dpr, Offset origin, bool viewMoving) {
     if (!dpr.isFinite || dpr <= 0 || size.isEmpty) return false;
     // Align tiles to the actual device pixel grid, including fractional page
     // positions. A one-pixel gutter prevents filtering seams between tiles.
-    final phase = Offset(origin.dx - origin.dx.floor(), origin.dy - origin.dy.floor());
+    var phase = Offset(origin.dx - origin.dx.floor(), origin.dy - origin.dy.floor());
+    if (viewMoving) {
+      // Never stretch a tile during zoom. At the same scale, reuse its pixels
+      // during translation and restore exact device alignment once motion ends.
+      final previous = _tileConfiguration;
+      if (previous == null || previous.$1 != size || previous.$2 != dpr) return false;
+      phase = previous.$3;
+    }
     final configuration = (size, dpr, phase);
     if (_tileConfiguration != configuration) {
       _disposeTiles();
@@ -290,6 +339,17 @@ class CommittedInkCache {
     final top = ((clip.top * dpr + phase.dy) / _tileSide).floor();
     final right = ((clip.right * dpr + phase.dx) / _tileSide).ceil();
     final bottom = ((clip.bottom * dpr + phase.dy) / _tileSide).ceil();
+    final visibleTiles = (right - left) * (bottom - top);
+    final capacity = math.max(maxRasterPixels ~/ _tilePixels,
+      math.min(visibleTiles, maxTileRasterPixels ~/ _tilePixels));
+    // Evict offscreen tiles first. A scan through a viewport larger than the
+    // budget must never evict the visible tiles needed again on the next frame.
+    for (final key in _tiles.keys.toList()) {
+      if (_tiles.length <= capacity) break;
+      if (key.$1 < left || key.$1 >= right || key.$2 < top || key.$2 >= bottom) {
+        _tiles.remove(key)!.dispose();
+      }
+    }
     canvas.save();
     canvas.clipRect(clip, doAntiAlias: false);
     try {
@@ -300,7 +360,14 @@ class CommittedInkCache {
           final padded = rect.inflate(1 / dpr);
           final key = (x, y);
           var image = _tiles.remove(key);
-          if (image == null && !_tileRasterFailed) {
+          if (image == null && !viewMoving && !_tileRasterFailed) {
+            if (_tiles.length >= capacity) {
+              final offscreen = _tiles.keys.where((key) => key.$1 < left || key.$1 >= right ||
+                key.$2 < top || key.$2 >= bottom).firstOrNull;
+              if (offscreen != null) _tiles.remove(offscreen)!.dispose();
+            }
+          }
+          if (image == null && !viewMoving && !_tileRasterFailed && _tiles.length < capacity) {
             final recorder = ui.PictureRecorder();
             final recording = Canvas(recorder)..scale(dpr)..translate(-padded.left, -padded.top);
             _drawGeometry(recording, size, geometry, padded);
@@ -319,14 +386,12 @@ class CommittedInkCache {
             continue;
           }
           _tiles[key] = image;
-          while (_tiles.length * _tilePixels > maxRasterPixels) {
-            _tiles.remove(_tiles.keys.first)!.dispose();
-          }
+          assert(() { debugTileDraws++; return true; }());
           canvas.save();
           canvas.clipRect(rect, doAntiAlias: false);
           try {
             canvas.drawImageRect(image, const Rect.fromLTWH(0, 0, _tileSide + 2, _tileSide + 2),
-              padded, Paint()..filterQuality = FilterQuality.none);
+              padded, Paint()..filterQuality = viewMoving ? FilterQuality.low : FilterQuality.none);
           } on ui.PictureRasterizationException {
             _tileRasterFailed = true;
             _tiles.remove(key)?.dispose();
@@ -454,6 +519,7 @@ class CommittedInkCache {
     _disposeRaster();
     for (final chunk in _chunks) { chunk.picture.dispose(); }
     _chunks = [];
+    _strokes = const [];
     _size = null;
     _pageWidth = null;
   }
@@ -476,7 +542,7 @@ void _paintCommittedStroke(Canvas canvas, Size size, double pageWidth, InkStroke
 class CommittedInkPainter extends CustomPainter {
   CommittedInkPainter(this.editor, this.page, this.pageWidth, {this.hidden = const {},
     this.surface = InkSurface.page, this.referenceSize, this.cache, this.devicePixelRatio,
-    this.documentSize, this.visibleRect, this.physicalOrigin})
+    this.documentSize, this.visibleRect, this.physicalOrigin, this.viewMoving = false})
       : super(repaint: editor.inkSignal(page, surface));
   final EditorController editor;
   final int page;
@@ -489,6 +555,7 @@ class CommittedInkPainter extends CustomPainter {
   final Size? documentSize;
   final Rect? visibleRect;
   final Offset? physicalOrigin;
+  final bool viewMoving;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -498,7 +565,7 @@ class CommittedInkPainter extends CustomPainter {
     if (cache != null) {
       cache!.paint(canvas, reference, pageWidth, strokes.toList(),
         surfaceSize: size, devicePixelRatio: devicePixelRatio, documentSize: documentSize,
-        visibleRect: visibleRect, physicalOrigin: physicalOrigin);
+        visibleRect: visibleRect, physicalOrigin: physicalOrigin, viewMoving: viewMoving);
     } else {
       for (final stroke in strokes) { _paintCommittedStroke(canvas, reference, pageWidth, stroke); }
     }
@@ -509,7 +576,7 @@ class CommittedInkPainter extends CustomPainter {
       old.page != page || old.pageWidth != pageWidth || !setEquals(old.hidden, hidden) ||
       old.surface != surface || old.referenceSize != referenceSize || old.cache != cache ||
       old.devicePixelRatio != devicePixelRatio || old.documentSize != documentSize ||
-      old.visibleRect != visibleRect || old.physicalOrigin != physicalOrigin;
+      old.visibleRect != visibleRect || old.physicalOrigin != physicalOrigin || old.viewMoving != viewMoving;
 }
 
 class ActiveInk extends ChangeNotifier {

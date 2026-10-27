@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -22,6 +23,102 @@ InkStroke savedStroke(int index, {int count = 8}) => InkStroke(
 );
 
 void main() {
+  test('visible tile working sets do not churn, even beyond the memory cap', () {
+    for (final size in [const Size(1200, 1600), const Size(4608, 4096)]) {
+      final cache = CommittedInkCache();
+      final strokes = [savedStroke(1)];
+      void frame({Rect? visible}) {
+        final recorder = ui.PictureRecorder();
+        cache.paint(Canvas(recorder), size, size.width, strokes,
+          documentSize: size, devicePixelRatio: 1, physicalOrigin: Offset.zero,
+          visibleRect: visible);
+        recorder.endRecording().dispose();
+      }
+      frame();
+      final count = cache.debugRasterizations;
+      expect(count, greaterThan(7));
+      expect(cache.debugTileCount * 514 * 514,
+        lessThanOrEqualTo(CommittedInkCache.maxTileRasterPixels));
+      frame();
+      expect(cache.debugRasterizations, count,
+        reason: 'A repeat frame must not rerasterize tiles evicted by its own scan');
+      // Shrinking the viewport should release offscreen memory too.
+      frame(visible: const Rect.fromLTWH(0, 0, 512, 512));
+      expect(cache.debugTileCount, lessThanOrEqualTo(7));
+      cache.dispose();
+    }
+  });
+
+  test('tile edits preserve untouched pixels across append, erase, undo and reorder', () async {
+    const size = Size(1024, 1024);
+    final cache = CommittedInkCache();
+    addTearDown(cache.dispose);
+    InkStroke localized(String id, double x, double y, {double width = 4}) => InkStroke(
+      id: id, pageIndex: 0, width: width, color: id == 'new' ? 0xffffd740 : 0xff2947c7,
+      kind: InkKind.highlighter, createdAt: DateTime.utc(2026),
+      points: [InkPoint(x, y, .75, 0), InkPoint(x + .08, y + .08, .75, 1)]);
+    final strokes = [localized('left', .1, .1), localized('right', .7, .7)];
+    Future<void> check(int expectedRasters) async {
+      final before = cache.debugRasterizations;
+      Future<List<int>> frame(CommittedInkCache target) => rasterize((canvas) =>
+        target.paint(canvas, size, size.width, strokes, documentSize: size,
+          devicePixelRatio: 1, physicalOrigin: Offset.zero), size);
+      final actual = await frame(cache);
+      expect(cache.debugRasterizations - before, expectedRasters);
+      final fresh = CommittedInkCache();
+      try { expect(actual, orderedEquals(await frame(fresh))); }
+      finally { fresh.dispose(); }
+    }
+    await check(4);
+    await check(0);
+    strokes.add(localized('new', .15, .15));
+    await check(1); // Rebuilding a picture chunk must not invalidate all its tiles.
+    final removed = strokes.removeAt(0);
+    await check(1);
+    strokes.insert(0, removed);
+    await check(1);
+    final last = strokes.removeLast();
+    strokes.insert(0, last);
+    await check(4); // Changed paint order must also invalidate affected pixels.
+    strokes.add(localized('boundary', .495, .25, width: 20));
+    await check(2); // A wide nib reaches across a tile boundary.
+    strokes.removeLast();
+    await check(2);
+    strokes.clear();
+    await check(0);
+    expect(cache.debugTileCount, 0);
+  });
+
+  test('pan reuses tiles, zoom uses vectors, and settling restores exact pixels', () async {
+    final cache = CommittedInkCache();
+    addTearDown(cache.dispose);
+    const size = Size(600, 800);
+    final strokes = List.generate(40, savedStroke);
+    Future<List<int>> frame(CommittedInkCache target, Offset origin,
+        {bool moving = false, double zoom = 1}) => rasterize((canvas) {
+      canvas.translate(origin.dx, origin.dy);
+      target.paint(canvas, size * zoom, size.width, strokes, documentSize: size,
+        devicePixelRatio: 1, physicalOrigin: origin, viewMoving: moving);
+    }, size);
+    await frame(cache, Offset.zero);
+    final rasters = cache.debugRasterizations;
+    final draws = cache.debugTileDraws;
+    const origin = Offset(-.37, -.73);
+    await frame(cache, origin, moving: true);
+    expect(cache.debugRasterizations, rasters);
+    expect(cache.debugTileDraws, greaterThan(draws));
+    final panDraws = cache.debugTileDraws;
+    await frame(cache, origin, moving: true, zoom: 1.25);
+    expect(cache.debugRasterizations, rasters);
+    expect(cache.debugTileDraws, panDraws, reason: 'Zoom must not stretch cached ink');
+    final actual = await frame(cache, origin);
+    final fresh = CommittedInkCache();
+    try { expect(actual, orderedEquals(await frame(fresh, origin))); }
+    finally { fresh.dispose(); }
+    expect(cache.debugRasterizations, greaterThan(rasters));
+    expect(cache.debugRecordedStrokes, strokes.length);
+  });
+
   test('raster ink preserves edits, opacity, extended coordinates, zoom and DPR', () async {
     final editor = EditorController(sampleDocument(), MemoryRepository());
     final cache = CommittedInkCache();
