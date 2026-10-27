@@ -6,6 +6,16 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:papertrail/features/document/app_document.dart';
 import 'package:papertrail/features/pdf_viewer/writing_paper_painter.dart';
 
+class GuideCountingCanvas implements Canvas {
+  final lines = <(Offset, Offset)>[];
+  @override
+  Rect getLocalClipBounds() => Rect.largest;
+  @override
+  void drawLine(Offset p1, Offset p2, Paint paint) => lines.add((p1, p2));
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 Future<ByteData> renderPaper(
   WritingPattern pattern,
   WritingSpacing spacing,
@@ -28,6 +38,22 @@ Future<ByteData> renderPaper(
 }
 
 void main() {
+  test('an unbounded repaint layer only records guides around the visible margin', () {
+    final canvas = GuideCountingCanvas();
+    const visible = Rect.fromLTWH(500000, 200000, 600, 800);
+    const WritingPaperPainter(pattern: WritingPattern.grid,
+      spacing: WritingSpacing.medium, scale: 1, visibleRect: visible)
+      .paint(canvas, const Size(1000000, 1000000));
+    expect(canvas.lines, isNotEmpty);
+    expect(canvas.lines.length, lessThan(100));
+    for (final line in canvas.lines) {
+      expect(visible.inflate(WritingSpacing.medium.points).contains(line.$1), isTrue);
+      expect(visible.inflate(WritingSpacing.medium.points).contains(line.$2), isTrue);
+      expect(line.$1.dx % WritingSpacing.medium.points == 0 ||
+        line.$1.dy % WritingSpacing.medium.points == 0, isTrue);
+    }
+  });
+
   test(
     'blank, ruled and grid guides use the selected spacing at each zoom',
     () async {

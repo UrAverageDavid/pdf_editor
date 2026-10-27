@@ -86,6 +86,9 @@ void main() {
       .firstWhere((p) => p.page == 0).cache!;
     final recorded = cache.debugRecordedStrokes;
     final rasterized = cache.debugRasterizations;
+    final selected = cache.debugStrokeSelections;
+    final geometryDraws = cache.debugGeometryDraws;
+    final tileDraws = cache.debugTileDraws;
     final rendersBefore = pdf.rendered.length;
     final tilesBefore = pdf.tiles.length;
     for (var i = 1; i <= 20; i++) {
@@ -97,9 +100,13 @@ void main() {
       expect(mountedCache, same(cache));
       expect(cache.debugRecordedStrokes, recorded);
       expect(cache.debugRasterizations, rasterized);
+      expect(cache.debugStrokeSelections, selected);
+      expect(cache.debugGeometryDraws, geometryDraws);
       expect(pdf.rendered.length, rendersBefore);
       expect(pdf.tiles.length, tilesBefore);
     }
+    expect(cache.debugTileDraws, greaterThan(tileDraws),
+      reason: 'Zoom must draw cached pixels instead of replaying stroke paths');
     await tester.pump(const Duration(milliseconds: 150));
     await tester.pumpAndSettle();
     expect(cache.debugRecordedStrokes, recorded);

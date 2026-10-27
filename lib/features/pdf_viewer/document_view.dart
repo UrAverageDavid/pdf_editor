@@ -516,6 +516,13 @@ class DocumentViewState extends State<DocumentView>
     }
     Rect visibleInk(Rect rect) => rect.intersect(Offset.zero & view.size)
       .shift(-rect.topLeft);
+    Rect visiblePaper(Rect rect) {
+      final visible = visibleInk(rect);
+      // Keep a small overscan so subpixel pans retain the grid display list.
+      return Rect.fromLTRB((visible.left / 256).floor() * 256,
+        (visible.top / 256).floor() * 256, (visible.right / 256).ceil() * 256,
+        (visible.bottom / 256).ceil() * 256);
+    }
     Offset? physicalOrigin(Rect rect) => _viewportOrigin == null ? null :
       (_viewportOrigin! + rect.topLeft) * dpr;
     final visible = view.visibleDocument;
@@ -585,6 +592,7 @@ class DocumentViewState extends State<DocumentView>
                           RepaintBoundary(child: CustomPaint(painter: WritingPaperPainter(
                             pattern: widget.editor.document.writingAreas[page]!.pattern,
                             spacing: widget.editor.document.writingAreas[page]!.spacing,
+                            visibleRect: visiblePaper(view.screenRect(view.layout.notes[page])),
                             scale: view.scale))),
                           RepaintBoundary(child: CommittedInk(
                             editor: widget.editor, page: page, pageWidth: view.layout.pages[page].width,

@@ -8,17 +8,22 @@ class WritingPaperPainter extends CustomPainter {
     required this.pattern,
     required this.spacing,
     required this.scale,
+    this.visibleRect,
   });
   final WritingPattern pattern;
   final WritingSpacing spacing;
   final double scale;
+  /// Repaint boundaries record with their own clip, which may cover an
+  /// enormous offscreen margin. Bound guides explicitly to the viewport.
+  final Rect? visibleRect;
 
   @override
   void paint(Canvas canvas, Size size) {
     if (pattern == WritingPattern.blank || scale <= 0 || !scale.isFinite)
       return;
     final step = spacing.points * scale;
-    final visible = canvas.getLocalClipBounds().intersect(Offset.zero & size);
+    final visible = canvas.getLocalClipBounds().intersect(Offset.zero & size)
+      .intersect(visibleRect ?? (Offset.zero & size));
     if (visible.isEmpty) return;
     final paint = Paint()
       ..color = const Color(0xffcbd3d9)
@@ -50,5 +55,6 @@ class WritingPaperPainter extends CustomPainter {
   bool shouldRepaint(WritingPaperPainter oldDelegate) =>
       pattern != oldDelegate.pattern ||
       spacing != oldDelegate.spacing ||
-      scale != oldDelegate.scale;
+      scale != oldDelegate.scale ||
+      (pattern != WritingPattern.blank && visibleRect != oldDelegate.visibleRect);
 }

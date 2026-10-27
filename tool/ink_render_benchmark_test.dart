@@ -11,6 +11,51 @@ import 'package:papertrail/features/annotations/pen_preset.dart';
 // The raster benchmark waits for image readback; the other cases only measure
 // Dart display-list recording. Neither measures Windows presentation/pen latency.
 void main() {
+  test('rasterize continuous zoom with dense PDF ink and extra writing space', () async {
+    const document = Size(600, 800);
+    for (final count in [100, 500]) {
+      final strokes = List<InkStroke>.unmodifiable(List.generate(count, (index) =>
+        InkStroke(id: '$index', pageIndex: 0,
+          points: List.generate(128, (i) => InkPoint(
+            .1 + .8 * i / 128, .5 + .35 * math.sin((i + index) / 20), .75, i)),
+          width: 2.2, color: 0xff2947c7, createdAt: DateTime.utc(2026),
+          penStyle: const PenStyle(type: PenType.fountain))));
+      for (final notes in [false, true]) {
+        for (final tiles in [false, true]) {
+          final caches = [CommittedInkCache(), if (notes) CommittedInkCache()];
+          Future<void> frame(double zoom, {bool moving = true}) async {
+            final recorder = ui.PictureRecorder();
+            final canvas = Canvas(recorder);
+            for (var index = 0; index < caches.length; index++) {
+              final origin = Offset(index * document.width * zoom, -.73 * zoom);
+              canvas.save();
+              canvas.translate(origin.dx, origin.dy);
+              caches[index].paint(canvas, document * zoom, document.width, strokes,
+                documentSize: document, devicePixelRatio: tiles ? 1 : null,
+                physicalOrigin: origin, viewMoving: moving, immutableStrokes: true,
+                visibleRect: Rect.fromLTWH(-origin.dx, -origin.dy,
+                  notes ? 1200 : 600, 800));
+              canvas.restore();
+            }
+            final picture = recorder.endRecording();
+            final image = picture.toImageSync(notes ? 1200 : 600, 800);
+            try { await image.toByteData(); }
+            finally { image.dispose(); picture.dispose(); }
+          }
+          await frame(1, moving: false);
+          await frame(1.01);
+          final watch = Stopwatch()..start();
+          for (var i = 1; i <= 10; i++) { await frame(1 + i * .025); }
+          watch.stop();
+          debugPrint('Zoom raster + readback, $count x 128 samples/surface, '
+            'notes=$notes, tiles=$tiles: '
+            '${(watch.elapsedMicroseconds / 10000).toStringAsFixed(3)} ms/frame');
+          for (final cache in caches) { cache.dispose(); }
+        }
+      }
+    }
+  });
+
   test('dense high-DPI pan using vectors versus retained viewport tiles', () async {
     const document = Size(600, 800), surface = Size(1200, 1600);
     final strokes = List.generate(500, (index) => InkStroke(id: '$index', pageIndex: 0,

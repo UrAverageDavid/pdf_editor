@@ -265,15 +265,19 @@ does not invalidate its retained layers. Saved ink caches ordered groups of up t
 with a soft 4096-point limit (individual strokes remain whole for highlighter opacity).
 Edits replace affected groups. The document view records saved strokes in PDF coordinates,
 so zoom reuses those paths and changes only the canvas transform. Chunk bounds skip ink
-outside the visible viewport. Panning reuses same-scale raster tiles, with vectors for newly
-exposed areas; zooming uses vectors at the current scale. Panning may temporarily resample
-ink at fractional offsets. After 120 ms without movement, visible 512-pixel ink tiles are
+outside the visible viewport. Stroke selection is cached by each surface's ink revision,
+so navigation does not repeatedly filter or compare all saved strokes. Panning and zooming
+reuse raster tiles; newly exposed tiles are cached even during movement. Zoom temporarily
+resamples the cached pixels, rebasing when the scale changes by more than a factor of two.
+After 120 ms without movement, visible 512-pixel ink tiles are
 rasterized at the full device pixel ratio and exact fractional page origin, restoring sharp
 ink. One-pixel gutters avoid seams. The tile budget grows from 2 million pixels to fit the
 visible area, capped at 16 million pixels (64 MB) per surface. Offscreen tiles are evicted
 first; excess visible tiles use vectors without evicting other visible tiles. Resolution is
 never reduced to fit a whole page. Edits invalidate only tiles intersecting changed strokes;
 unchanged geometry and tiles remain reusable. Rasterization failure falls back to vectors. Thumbnail caches remain separate.
+Writing-space guides are explicitly limited to the viewport with a small overscan, since
+a repaint boundary's recording clip can otherwise cover the entire offscreen margin.
 Whole-page PDF previews retain their 2-million-pixel cap. Above that resolution, the viewer
 requests visible PDF tiles at the current zoom and device pixel ratio after navigation settles.
 Intermediate zoom steps do not request replacement previews or tiles for mounted pages.
@@ -324,6 +328,9 @@ Run `flutter test tool/ink_render_benchmark_test.dart --reporter expanded` to me
 Dart-side recording of long live strokes and saved-ink rasterization. The saved-ink case
 compares retained vector commands against a retained image and waits for image readback;
 it includes raster work but does not measure Windows presentation or physical pen latency.
+The continuous-zoom case compares vectors with retained tiles at 100 and 500 strokes per
+surface, both with and without an additional inked writing space. It measures warmed
+navigation frames; first exposure, large scale rebases, and settling still rasterize ink.
 Pixel comparisons cover saved-ink opacity, edits, erasing, undo/redo, zoom, DPR, and expanded
 note coordinates, including surfaces beyond the raster budget and fractional DPI/zoom.
 Scroll regressions verify retained PDF/note ink caches, including vector fallbacks.

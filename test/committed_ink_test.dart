@@ -89,7 +89,7 @@ void main() {
     expect(cache.debugTileCount, 0);
   });
 
-  test('pan reuses tiles, zoom uses vectors, and settling restores exact pixels', () async {
+  test('pan and zoom reuse tiles, and settling restores exact pixels', () async {
     final cache = CommittedInkCache();
     addTearDown(cache.dispose);
     const size = Size(600, 800);
@@ -108,15 +108,93 @@ void main() {
     expect(cache.debugRasterizations, rasters);
     expect(cache.debugTileDraws, greaterThan(draws));
     final panDraws = cache.debugTileDraws;
+    final geometryDraws = cache.debugGeometryDraws;
     await frame(cache, origin, moving: true, zoom: 1.25);
     expect(cache.debugRasterizations, rasters);
-    expect(cache.debugTileDraws, panDraws, reason: 'Zoom must not stretch cached ink');
-    final actual = await frame(cache, origin);
+    expect(cache.debugTileDraws, greaterThan(panDraws));
+    expect(cache.debugGeometryDraws, geometryDraws,
+      reason: 'Intermediate zoom frames must not replay stroke geometry');
+    await frame(cache, origin, moving: true, zoom: .75);
+    expect(cache.debugRasterizations, rasters);
+    expect(cache.debugGeometryDraws, geometryDraws,
+      reason: 'Zooming out must reuse tiles as well as zooming in');
+    final actual = await frame(cache, origin, zoom: 1.25);
     final fresh = CommittedInkCache();
-    try { expect(actual, orderedEquals(await frame(fresh, origin))); }
+    try { expect(actual, orderedEquals(await frame(fresh, origin, zoom: 1.25))); }
     finally { fresh.dispose(); }
     expect(cache.debugRasterizations, greaterThan(rasters));
     expect(cache.debugRecordedStrokes, strokes.length);
+  });
+
+  test('cold and newly exposed note tiles rasterize once during motion', () async {
+    const document = Size(600, 800), surface = Size(12000, 800);
+    final cache = CommittedInkCache();
+    addTearDown(cache.dispose);
+    final strokes = [for (var i = 0; i < 20; i++)
+      InkStroke(id: '$i', pageIndex: 0, surface: InkSurface.notes,
+        points: [InkPoint(i + .1, .1, .75, 0), InkPoint(i + .8, .8, .75, 1)],
+        width: 2, color: 0xff2947c7, createdAt: DateTime.utc(2026))];
+    Future<List<int>> frame(CommittedInkCache target, double x, {bool moving = true}) =>
+      rasterize((canvas) {
+        canvas.translate(-x, 0);
+        target.paint(canvas, document, document.width, strokes,
+          surfaceSize: surface, documentSize: document, devicePixelRatio: 1,
+          visibleRect: Rect.fromLTWH(x, 0, 600, 800),
+          physicalOrigin: Offset(-x, 0), viewMoving: moving);
+      }, document);
+    for (final x in [0.0, 6000.0, 11000.0]) {
+      final before = cache.debugRasterizations;
+      final actual = await frame(cache, x);
+      expect(cache.debugRasterizations, greaterThan(before));
+      final rasters = cache.debugRasterizations, geometry = cache.debugGeometryDraws;
+      expect(await frame(cache, x), orderedEquals(actual));
+      expect(cache.debugRasterizations, rasters);
+      expect(cache.debugGeometryDraws, geometry);
+      final fresh = CommittedInkCache();
+      try { expect(actual, orderedEquals(await frame(fresh, x, moving: false))); }
+      finally { fresh.dispose(); }
+      expect(cache.debugTileCount, lessThanOrEqualTo(7));
+    }
+  });
+
+  test('navigation reuses stroke selection and ink edits invalidate it', () {
+    final editor = EditorController(sampleDocument(), MemoryRepository());
+    final cache = CommittedInkCache();
+    addTearDown(() { cache.dispose(); editor.dispose(); });
+    editor.document.annotations[0] = List.generate(500, savedStroke);
+    void frame({double zoom = 1, Set<String> hidden = const {}}) {
+      final recorder = ui.PictureRecorder();
+      CommittedInkPainter(editor, 0, 600, surface: InkSurface.notes,
+        cache: cache, documentSize: const Size(600, 800), hidden: hidden,
+        devicePixelRatio: 1, physicalOrigin: Offset.zero, viewMoving: true,
+        visibleRect: const Rect.fromLTWH(0, 0, 600, 800))
+        .paint(Canvas(recorder), const Size(600, 800) * zoom);
+      recorder.endRecording().dispose();
+    }
+    frame();
+    for (var i = 1; i <= 20; i++) { frame(zoom: 1 + i / 40); }
+    expect(cache.debugStrokeSelections, 1);
+    expect(cache.debugRecordedStrokes, 500);
+    editor.addStroke(savedStroke(500));
+    frame();
+    expect(cache.debugStrokeSelections, 2);
+    editor.undo();
+    frame();
+    expect(cache.debugStrokeSelections, 3);
+    editor.redo();
+    frame();
+    expect(cache.debugStrokeSelections, 4);
+    editor.reconcileStroke(editor.strokes(0).last, savedStroke(500, count: 20));
+    frame();
+    expect(cache.debugStrokeSelections, 5);
+    frame(hidden: {'500'});
+    frame(hidden: {'500'});
+    expect(cache.debugStrokeSelections, 6);
+    frame();
+    expect(cache.debugStrokeSelections, 7);
+    editor.setTool(EditorTool.hand);
+    frame();
+    expect(cache.debugStrokeSelections, 7);
   });
 
   test('raster ink preserves edits, opacity, extended coordinates, zoom and DPR', () async {
